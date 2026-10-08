@@ -69,7 +69,7 @@ Jalur alternatif: `quote_override` pada `workflow_dispatch` melewati Sheet sama 
 
 | Risiko | Dampak | Mitigasi |
 |---|---|---|
-| URL footage Wikimedia belum terverifikasi dari runner; Wikimedia meminta User-Agent deskriptif dan bisa membatasi hotlink | Semua klip jatuh ke warna polos | Cek log run pertama; ganti ke API stok berlisensi jelas (mis. Pexels) |
+| Footage Wikimedia terunduh di runner (run #2), tetapi Wikimedia meminta User-Agent deskriptif dan bisa membatasi hotlink; unduhan terpotong 15 MB membawa header durasi palsu | Klip jatuh ke warna polos, atau background terlalu pendek (terjadi di run #2) | Remux + validasi segmen + perpanjangan frame (sudah); jangka panjang: API stok berlisensi jelas (mis. Pexels) |
 | Lisensi klip Wikimedia beragam (atribusi / share-alike) | Masalah klaim hak cipta | Audit lisensi tiap klip sebelum monetisasi |
 | URL BGM Pixabay bersifat CDN sementara | BGM jatuh ke nada sinus | Simpan BGM berlisensi jelas di `assets/` |
 | edge-tts adalah layanan tidak resmi | Bisa berubah / dibatasi | Pin versi; siapkan TTS cadangan |

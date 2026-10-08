@@ -60,12 +60,13 @@ Panjang hasil `n·seg − (n−1)·xf = total`, jadi tepat sama dengan target. C
 
 Langkah per video:
 1. `pick_clip_urls(n)` memilih URL tanpa pengulangan selama pool cukup; bila pool lebih kecil dari `n` (saat ini pool = 3, `n` bisa 4), klip dipakai ulang tetapi tidak pernah berurutan.
-2. `download_clip` mengunduh (maks ~15 MB, `raise_for_status`, divalidasi `ffprobe`). Klip dipakai ulang dari cache `temp/raw_<i>.webm` bila sudah ada.
-3. `make_segment` memotong `seg` detik dari titik acak klip, lalu: scale + crop 1080x1920, `fps=30`, `eq` (brightness -0.15, contrast 1.2), `vignette`, `format=yuv420p`. Klip pendek di-loop.
-4. Gagal unduh → `make_fallback_segment` (warna polos `0x0d1117`) menggantikan hanya klip itu, jadi jumlah klip dan durasi tetap utuh.
-5. `crossfade_segments` merangkai semua segmen dengan filter `xfade`, transisi bergantian `fade`, `dissolve`, `fadeblack`.
+2. `download_clip` mengunduh (maks ~15 MB, `raise_for_status`, divalidasi `ffprobe`) ke `temp/raw_<i>.webm`.
+3. `remux_clip` menyalin stream video ke `temp/clip_<i>.mkv` (`-c copy`) sehingga durasi = data yang benar-benar terunduh. Unduhan terpotong tetap membawa header durasi penuh, jadi tanpa langkah ini titik mulai acak bisa jatuh di luar data.
+4. `make_segment` memotong `seg` detik dari titik acak klip, lalu: scale + crop 1080x1920, `fps=30`, `eq` (brightness -0.15, contrast 1.2), `vignette`, `format=yuv420p`. Klip pendek di-loop. Hasilnya diperiksa: bila lebih pendek dari `seg − 0,15 s`, segmen diulang dari awal klip; bila tetap pendek, klip dianggap gagal.
+5. Gagal unduh / remux / segmen → `make_fallback_segment` (warna polos `0x0d1117`) menggantikan hanya klip itu, jadi jumlah klip dan durasi tetap utuh.
+6. `crossfade_segments` merangkai semua segmen dengan filter `xfade`, transisi bergantian `fade`, `dissolve`, `fadeblack`.
 
-Hasil uji (`tests/test_sequencing.py`): 4 klip berwarna berbeda untuk 30 detik, warna dominan berganti di tiap segmen, durasi 31,5 s, resolusi 1080x1920. Yang belum teruji: unduhan nyata dari Wikimedia (diblokir di sandbox pengembangan).
+Hasil uji (`tests/test_sequencing.py`): 4 klip berwarna berbeda untuk 30 detik, warna dominan berganti di tiap segmen, durasi 31,5 s, resolusi 1080x1920. Di runner (run #2) unduhan Wikimedia berhasil tetapi background hanya 10,7 s dari 33,9 s; langkah 3, validasi di langkah 4, dan `extend_to_duration` (tahan frame terakhir bila rangkaian akhir masih pendek) ditambahkan untuk itu. Tes regresi ada di `ShortSegmentRegressionTest`.
 
 ### 3b. Sinkronisasi subtitle dan ducking audio
 
@@ -168,11 +169,11 @@ Segment         : temp/seg_<i>.mp4                 # 1080x1920, 30 fps, tanpa au
 ## 9. Celah yang diketahui
 
 1. Level ducking (`BGM_VOLUME`, `DUCK_*`) baru diukur dengan nada uji, belum didengar dengan musik dan suara asli.
-2. Subtitle tersinkron per tampilan 3 kata; belum ada highlight kata per kata (`\k`). Apakah `id-ID-ArdiNeural` mengirim event `WordBoundary` belum terverifikasi; bila tidak, cadangan otomatis dipakai dan tercatat di log.
+2. Subtitle tersinkron per tampilan 3 kata; belum ada highlight kata per kata (`\k`). `id-ID-ArdiNeural` terbukti mengirim `WordBoundary` di runner.
 3. Kolom B (tema) dibaca tetapi tidak memengaruhi pemilihan footage.
 4. Kolom E berisi teks, bukan tautan; `DONE` ditulis sebelum artifact diunggah.
 5. (selesai) BGM kini di-loop dengan `-stream_loop -1`.
-6. URL footage dan BGM belum terverifikasi dari runner; User-Agent `Mozilla/5.0` tidak sesuai kebijakan Wikimedia.
+6. Footage dan BGM terunduh di runner, tetapi User-Agent `Mozilla/5.0` tidak sesuai kebijakan Wikimedia (bisa dibatasi sewaktu-waktu). Perbaikan background pendek belum dijalankan ulang di runner.
 7. Pool footage hanya 3 URL sementara video bisa memakai 4 klip.
 8. Secret `OMNIROUTE_*` dan dependensi berat belum dipakai.
 9. `repository_dispatch` tidak meneruskan `client_payload` sebagai quote.

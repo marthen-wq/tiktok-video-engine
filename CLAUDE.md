@@ -42,10 +42,11 @@ Never commit credentials.
 
 ## ✅ What is real vs. not yet (do not claim otherwise)
 - Ducking is real (`sidechaincompress` keyed by the narration, `amix normalize=0`), but the levels (`BGM_VOLUME`, `DUCK_*`) were only measured with test tones — tune by ear.
-- Subtitle timing comes from edge-tts `WordBoundary` events (fallbacks: `SentenceBoundary`, then length-proportional). It is unverified that `id-ID-ArdiNeural` emits word events; the run log says which source was used. There are no per-word `\k` highlights. `whisper-timestamped` is in `requirements.txt` but unused.
+- Subtitle timing comes from edge-tts `WordBoundary` events (fallbacks: `SentenceBoundary`, then length-proportional). `id-ID-ArdiNeural` does emit word events (verified on the runner, 68 words); the run log says which source was used. There are no per-word `\k` highlights. `whisper-timestamped` is in `requirements.txt` but unused.
 - Sheet column B (environment) is read but does not influence footage.
 - Column E stores plain text, and `DONE` is written before the artifact upload step.
-- Footage/BGM URLs have not been verified from a GitHub runner.
+- Footage (all 3 Wikimedia URLs) and the Pixabay BGM downloaded fine on the runner (run 2, 2026-10-08). That run exposed a short-background bug (10.7 s of 33.9 s); it is guarded by remux + segment-length checks + a final pad, but the fixed code has not yet been re-run on the runner.
+- `requirements.txt` pulls PyTorch + CUDA via `whisper-timestamped` (install step ~2 min).
 
 ## 🚀 How to Run & Test
 

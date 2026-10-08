@@ -28,10 +28,10 @@ Pipeline `generator.py` (serial): ambil quote → TTS → durasi (ffprobe) → s
 
 ## Celah terbuka (jangan diasumsikan sudah ada)
 
-- Level ducking belum disetel dengan telinga; `WordBoundary` untuk `id-ID-ArdiNeural` belum terverifikasi.
+- Level ducking belum disetel dengan telinga. (`WordBoundary` untuk `id-ID-ArdiNeural` sudah terbukti di runner.)
 - Footage sesuai kolom B.
 - Tautan Artifact di Sheet; `DONE` ditulis sebelum upload.
-- URL footage/BGM belum terverifikasi dari runner.
+- Footage/BGM terunduh di runner; perbaikan background pendek (remux + validasi segmen + perpanjangan) belum dijalankan ulang di runner.
 
 ## Tes
 

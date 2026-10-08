@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import generator  # noqa: E402
@@ -90,6 +91,69 @@ class RenderSequenceTest(unittest.TestCase):
             out = os.path.join(tmp, "bg.mp4")
             generator.prepare_background_video(20.0, out)
             self.assertAlmostEqual(generator.probe_duration(out), 21.5, delta=0.3)
+
+
+class ShortSegmentRegressionTest(unittest.TestCase):
+    """Run Actions pertama: background 10,7 s padahal target 33,9 s (video diam ~22 s)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+        self.patches = [mock.patch.object(generator, "TEMP_DIR", self.dir)]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        self.tmp.cleanup()
+
+    def test_remux_reports_real_duration_of_truncated_download(self):
+        full = os.path.join(self.dir, "full.webm")
+        subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:d=60:r=25",
+                        "-c:v", "libvpx", "-b:v", "2M", full], check=True, stderr=subprocess.DEVNULL)
+        cut = os.path.join(self.dir, "cut.webm")
+        with open(full, "rb") as src, open(cut, "wb") as dst:
+            dst.write(src.read(os.path.getsize(full) // 4))
+        self.assertGreater(generator.probe_duration(cut), 55)  # header masih mengaku 60 s
+        clip = os.path.join(self.dir, "clip.mkv")
+        self.assertTrue(generator.remux_clip(cut, clip))
+        self.assertLess(generator.probe_duration(clip), 25)    # durasi nyata data yang terunduh
+
+    def _clip(self, seconds=30):
+        path = os.path.join(self.dir, "src.mkv")
+        make_clip(path, "blue", seconds=seconds)
+        return path
+
+    def test_short_segment_from_random_start_is_redone_from_beginning(self):
+        real_encode = generator.encode_segment
+
+        def flaky(clip, start, seg_len, out):  # titik acak menghasilkan segmen 2 s, seperti di runner
+            real_encode(clip, start, 2.0 if start is not None else seg_len, out)
+
+        out = os.path.join(self.dir, "seg.mp4")
+        with mock.patch.object(generator, "encode_segment", side_effect=flaky):
+            self.assertTrue(generator.make_segment(self._clip(), 8.5, out))
+        self.assertAlmostEqual(generator.probe_duration(out), 8.5, delta=0.15)
+
+    def test_always_short_segments_fall_back_and_background_keeps_length(self):
+        real_encode = generator.encode_segment
+        clip_src = self._clip()
+        with mock.patch.object(generator, "CINEMATIC_VIDEO_SOURCES", ["u/a", "u/b", "u/c"]), \
+             mock.patch.object(generator, "download_clip",
+                               side_effect=lambda u, d: subprocess.run(["cp", clip_src, d], check=True) or True), \
+             mock.patch.object(generator, "encode_segment",
+                               side_effect=lambda c, st, n, o: real_encode(c, st, 2.0, o)):
+            out = os.path.join(self.dir, "bg.mp4")
+            generator.prepare_background_video(30.0, out)
+        self.assertAlmostEqual(generator.probe_duration(out), 31.5, delta=0.3)
+
+    def test_short_crossfade_result_is_extended_to_target(self):
+        out = os.path.join(self.dir, "short.mp4")
+        subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=red:s=1080x1920:d=10:r=30",
+                        "-pix_fmt", "yuv420p", out], check=True, stderr=subprocess.DEVNULL)
+        generator.extend_to_duration(out, 33.9)
+        self.assertAlmostEqual(generator.probe_duration(out), 33.9, delta=0.3)
 
 
 if __name__ == "__main__":

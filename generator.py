@@ -255,26 +255,58 @@ def download_clip(url: str, dest: str) -> bool:
         print(f"[!] Gagal mengunduh {url} ({e})")
         return False
 
-def make_segment(raw: str, seg_len: float, out_path: str):
-    """Potong satu segmen vertikal 9:16 dari klip mentah, mulai dari titik acak."""
-    clip_len = probe_duration(raw)
-    cmd = ["ffmpeg", "-y"]
-    if clip_len > seg_len + 0.5:
-        cmd += ["-ss", f"{random.uniform(0, clip_len - seg_len - 0.25):.2f}"]
-    cmd += ["-stream_loop", "-1", "-i", raw, "-t", f"{seg_len:.3f}", "-an",
+def remux_clip(raw: str, dest: str) -> bool:
+    """Salin ulang stream video ke MKV agar durasi sesuai data yang benar-benar terunduh.
+
+    Unduhan yang dipotong di ~15MB tetap membawa header durasi penuh (mis. 120 s padahal
+    datanya 16 s), sehingga titik mulai acak bisa jatuh di luar data yang ada.
+    """
+    if os.path.exists(dest) and probe_duration(dest) > 0:
+        return True
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", raw, "-map", "0:v:0", "-c", "copy", dest])
+    real = probe_duration(dest)
+    print(f"[*] Durasi footage terpakai: {real:.1f}s (header: {probe_duration(raw):.1f}s)")
+    return real > 0
+
+SEGMENT_TOLERANCE = 0.15  # toleransi pembulatan frame saat memeriksa panjang segmen (detik)
+
+def encode_segment(clip: str, start, seg_len: float, out_path: str):
+    cmd = ["ffmpeg", "-y", "-v", "error"]
+    if start is not None:
+        cmd += ["-ss", f"{start:.2f}"]
+    cmd += ["-stream_loop", "-1", "-i", clip, "-t", f"{seg_len:.3f}", "-an",
             "-vf", VIDEO_FILTER, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", out_path]
-    subprocess.run(cmd, check=True, stderr=subprocess.DEVNULL)
+    subprocess.run(cmd, check=True)
+
+def make_segment(clip: str, seg_len: float, out_path: str) -> bool:
+    """Potong satu segmen vertikal 9:16 dari titik acak; ulangi dari awal klip bila hasilnya kurang panjang."""
+    clip_len = probe_duration(clip)
+    starts = [random.uniform(0, clip_len - seg_len - 0.25)] if clip_len > seg_len + 0.5 else []
+    name = os.path.basename(out_path)
+    for start in starts + [None]:
+        label = f"mulai {start:.1f}s" if start is not None else "dari awal (loop)"
+        try:
+            encode_segment(clip, start, seg_len, out_path)
+        except subprocess.CalledProcessError as e:
+            print(f"[!] Segmen {name} gagal di-encode ({label}): {e}")
+            continue
+        got = probe_duration(out_path)
+        if got >= seg_len - SEGMENT_TOLERANCE:
+            print(f"[+] Segmen {name}: {label}, {got:.2f}s")
+            return True
+        print(f"[!] Segmen {name} terlalu pendek: {got:.2f}s dari {seg_len:.2f}s ({label})")
+    return False
 
 def make_fallback_segment(seg_len: float, out_path: str):
     """Segmen cadangan jika klip gagal diunduh, agar jumlah klip dan durasi tetap utuh."""
     subprocess.run([
-        "ffmpeg", "-y", "-f", "lavfi",
+        "ffmpeg", "-y", "-v", "error", "-f", "lavfi",
         "-i", f"color=c=0x0d1117:s=1080x1920:d={seg_len:.3f}:r=30",
         "-vf", "format=yuv420p", "-c:v", "libx264", "-preset", "veryfast", out_path
-    ], check=True, stderr=subprocess.DEVNULL)
+    ], check=True)
 
 def crossfade_segments(segments, seg_len: float, xf: float, offsets, output_path: str):
-    cmd = ["ffmpeg", "-y"]
+    cmd = ["ffmpeg", "-y", "-v", "error"]
     for seg in segments:
         cmd += ["-i", seg]
     if len(segments) == 1:
@@ -289,7 +321,21 @@ def crossfade_segments(segments, seg_len: float, xf: float, offsets, output_path
     if graph:
         cmd += ["-filter_complex", graph, "-map", f"[{last}]"]
     cmd += ["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", output_path]
-    subprocess.run(cmd, check=True, stderr=subprocess.DEVNULL)
+    subprocess.run(cmd, check=True)
+
+def extend_to_duration(path: str, total: float):
+    """Pengaman terakhir: bila background lebih pendek dari narasi, tahan frame terakhir sampai `total`."""
+    got = probe_duration(path)
+    if got >= total - 0.3:
+        return
+    print(f"[!] Background hanya {got:.1f}s dari {total:.1f}s, frame terakhir diperpanjang")
+    padded = path + ".pad.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-v", "error", "-i", path,
+        "-vf", f"tpad=stop_mode=clone:stop_duration={total - got + 0.1:.2f}",
+        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", padded
+    ], check=True)
+    os.replace(padded, path)
 
 def prepare_background_video(target_duration: float, output_path: str):
     """Susun 3-4 klip footage berbeda (9:16, 1080x1920) dengan crossfade halus."""
@@ -300,16 +346,18 @@ def prepare_background_video(target_duration: float, output_path: str):
 
     segments = []
     for i, url in enumerate(urls):
-        raw = os.path.join(TEMP_DIR, f"raw_{CINEMATIC_VIDEO_SOURCES.index(url)}.webm")
+        idx = CINEMATIC_VIDEO_SOURCES.index(url)
+        raw = os.path.join(TEMP_DIR, f"raw_{idx}.webm")
+        clip = os.path.join(TEMP_DIR, f"clip_{idx}.mkv")
         seg_path = os.path.join(TEMP_DIR, f"seg_{i}.mp4")
-        if download_clip(url, raw):
-            make_segment(raw, seg_len, seg_path)
-        else:
+        ok = download_clip(url, raw) and remux_clip(raw, clip) and make_segment(clip, seg_len, seg_path)
+        if not ok:
             print(f"[!] Klip {i + 1} memakai visual cadangan")
             make_fallback_segment(seg_len, seg_path)
         segments.append(seg_path)
 
     crossfade_segments(segments, seg_len, xf, offsets, output_path)
+    extend_to_duration(output_path, total)
     print(f"[+] Background multi-klip siap: {probe_duration(output_path):.1f}s")
 
 def prepare_bgm(output_path: str):

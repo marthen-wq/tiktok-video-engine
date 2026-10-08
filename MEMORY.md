@@ -26,7 +26,9 @@ Catatan berumur panjang untuk manusia dan agen AI. Tambahkan entri baru di bagia
 - 15 tes offline lulus (sequencing, sinkronisasi subtitle, ducking). Smoke render lengkap menghasilkan 1080x1920.
 - Subtitle terbakar di video akhir sesuai event: muncul saat kata diucapkan, layar kosong di jeda panjang (diperiksa lewat frame).
 - Ducking terukur: musik turun ~19 dB saat nada narasi aktif; level narasi masuk = keluar. Format event edge-tts 7.2.8 dibaca dari source (offset dalam tick 100 ns), tetapi tidak dijalankan terhadap layanan TTS nyata.
-- Sandbox pengembangan memblokir Wikimedia dan Pixabay, jadi unduhan nyata **belum pernah teruji** di sana.
+- Sandbox pengembangan memblokir Wikimedia dan Pixabay; unduhan nyata hanya bisa diuji di runner.
+- Run Actions #2 (2026-10-08, commit `41c345c`): ketiga klip Wikimedia dan BGM Pixabay (2:27, stereo) terunduh; `WordBoundary (68 kata)`; install dependensi 2 menit (PyTorch + CUDA dari Whisper), render 4 menit 15 detik.
+- Run yang sama menemukan bug: background hanya 10,7 s dari 33,9 s, sehingga video diam ~22 s. Unduhan terpotong 15 MB tetap membawa header durasi penuh (terbukti lokal: header 120 s, data 15,9 s). Pemicu persisnya tidak bisa direproduksi tanpa file asli; diperbaiki dengan remux, validasi panjang segmen, dan perpanjangan frame terakhir.
 
 ## Hal yang belum benar (jangan diklaim sudah ada)
 
@@ -38,9 +40,7 @@ Catatan berumur panjang untuk manusia dan agen AI. Tambahkan entri baru di bagia
 
 ## Pertanyaan terbuka
 
-0. Apakah `id-ID-ArdiNeural` mengirim `WordBoundary`? Log run pertama akan menampilkan `Sinkronisasi subtitle: WordBoundary (N kata)` atau peringatan cadangan.
-
-1. Apakah URL footage Wikimedia terunduh dari runner GitHub? (cek log run pertama)
+1. Setelah perbaikan background pendek: segmen mana yang tadinya pendek? Log run berikutnya menampilkan baris `Segmen seg_N ... terlalu pendek` bila masih terjadi.
 2. Lisensi klip dan BGM cukup untuk monetisasi?
 3. Apa fungsi kolom C dan D di Sheet?
 4. Perlu penjadwalan harian otomatis (cron)?
