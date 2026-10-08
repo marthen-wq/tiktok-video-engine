@@ -31,7 +31,7 @@ Pipeline `generator.py` (serial): ambil quote → TTS → durasi (ffprobe) → s
 - Level ducking belum disetel dengan telinga. (`WordBoundary` untuk `id-ID-ArdiNeural` sudah terbukti di runner.)
 - Footage sesuai kolom B.
 - Tautan Artifact di Sheet; `DONE` ditulis sebelum upload.
-- Footage/BGM terunduh di runner; perbaikan background pendek (remux + validasi segmen + perpanjangan) belum dijalankan ulang di runner.
+- Wikimedia bisa membalas 429 ke runner (terjadi di run #3): render tetap jalan dengan background polos. Kini memakai User-Agent deskriptif + retry; efektivitasnya belum terbukti.
 
 ## Tes
 

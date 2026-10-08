@@ -156,5 +156,59 @@ class ShortSegmentRegressionTest(unittest.TestCase):
         self.assertAlmostEqual(generator.probe_duration(out), 33.9, delta=0.3)
 
 
+class FakeResponse:
+    def __init__(self, status, body=b"", headers=None):
+        self.status_code, self._body, self.headers = status, body, headers or {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise generator.requests.HTTPError(f"{self.status_code} Client Error")
+
+    def iter_content(self, chunk_size):
+        yield self._body
+
+    def close(self):
+        pass
+
+
+class DownloadRetryTest(unittest.TestCase):
+    """Run Actions #3: Wikimedia membalas 429 untuk User-Agent generik."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        clip = os.path.join(self.tmp.name, "real.webm")
+        make_clip(clip, "green", seconds=3)
+        with open(clip, "rb") as fh:
+            self.body = fh.read()
+        generator._failed_urls.clear()
+        self.sleep = mock.patch.object(generator.time, "sleep").start()
+
+    def tearDown(self):
+        mock.patch.stopall()
+        generator._failed_urls.clear()
+        self.tmp.cleanup()
+
+    def test_retries_after_429_with_descriptive_user_agent(self):
+        get = mock.patch.object(generator.requests, "get", side_effect=[
+            FakeResponse(429, headers={"Retry-After": "5"}), FakeResponse(200, self.body)]).start()
+        dest = os.path.join(self.tmp.name, "a.webm")
+        self.assertTrue(generator.download_clip("https://upload.wikimedia.org/x/a.webm", dest))
+        self.assertEqual(get.call_count, 2)
+        self.sleep.assert_called_once_with(5.0)
+        ua = get.call_args.kwargs["headers"]["User-Agent"]
+        self.assertIn("github.com/marthen-wq/tiktok-video-engine", ua)
+        self.assertNotIn("Mozilla", ua)
+
+    def test_gives_up_after_attempts_and_does_not_retry_same_url_later(self):
+        get = mock.patch.object(generator.requests, "get",
+                                side_effect=lambda *a, **k: FakeResponse(429)).start()
+        url = "https://upload.wikimedia.org/x/b.webm"
+        self.assertFalse(generator.download_clip(url, os.path.join(self.tmp.name, "b.webm")))
+        self.assertEqual(get.call_count, generator.DOWNLOAD_ATTEMPTS)
+        self.assertFalse(generator.download_clip(url, os.path.join(self.tmp.name, "b2.webm")))
+        self.assertEqual(get.call_count, generator.DOWNLOAD_ATTEMPTS)  # tidak ada permintaan tambahan
+        self.assertTrue(all(w <= generator.MAX_RETRY_WAIT for (w,), _ in self.sleep.call_args_list))
+
+
 if __name__ == "__main__":
     unittest.main()

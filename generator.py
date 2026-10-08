@@ -14,6 +14,7 @@ import math
 import random
 import asyncio
 import subprocess
+import time
 import requests
 
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1wQepTnnoZi0rO5oPKkP5Qq8dfIcwqiAPg1r9_tadLf4")
@@ -234,26 +235,52 @@ def probe_duration(path: str) -> float:
     except Exception:
         return 0.0
 
+# Wikimedia menolak (HTTP 429/403) User-Agent generik dari IP datacenter; kebijakannya meminta
+# UA deskriptif dengan kontak: https://meta.wikimedia.org/wiki/User-Agent_policy
+USER_AGENT = "TikTokShortsVideoEngine/2.1 (+https://github.com/marthen-wq/tiktok-video-engine) python-requests"
+DOWNLOAD_ATTEMPTS = 3
+MAX_RETRY_WAIT = 20  # detik
+_failed_urls = set()  # URL yang sudah gagal di run ini tidak dicoba lagi untuk klip berikutnya
+
+def _retry_wait(resp, attempt: int) -> float:
+    try:
+        return min(MAX_RETRY_WAIT, float(resp.headers.get("Retry-After", "")))
+    except ValueError:
+        return min(MAX_RETRY_WAIT, 2.0 * 2 ** attempt)
+
 def download_clip(url: str, dest: str) -> bool:
     """Unduh footage (maks ~15MB). True hanya jika hasilnya video yang bisa dibaca ffprobe."""
     if os.path.exists(dest) and probe_duration(dest) > 0:
         return True
-    try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30, stream=True)
-        r.raise_for_status()
-        size = 0
-        with open(dest, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
-                f.write(chunk)
-                size += len(chunk)
-                if size > 15 * 1024 * 1024:
-                    break
-        ok = probe_duration(dest) > 0
-        print(f"[{'+' if ok else '!'}] Klip {os.path.basename(url)[:40]}: {size // 1024} KB, {'valid' if ok else 'tidak terbaca'}")
-        return ok
-    except Exception as e:
-        print(f"[!] Gagal mengunduh {url} ({e})")
+    if url in _failed_urls:
         return False
+    for attempt in range(DOWNLOAD_ATTEMPTS):
+        try:
+            r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30, stream=True)
+            if r.status_code in (429, 503) and attempt < DOWNLOAD_ATTEMPTS - 1:
+                wait = _retry_wait(r, attempt)
+                print(f"[!] {r.status_code} dari {url.split('/')[2]}, coba lagi dalam {wait:.0f}s")
+                r.close()
+                time.sleep(wait)
+                continue
+            r.raise_for_status()
+            size = 0
+            with open(dest, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    f.write(chunk)
+                    size += len(chunk)
+                    if size > 15 * 1024 * 1024:
+                        break
+            ok = probe_duration(dest) > 0
+            print(f"[{'+' if ok else '!'}] Klip {os.path.basename(url)[:40]}: {size // 1024} KB, {'valid' if ok else 'tidak terbaca'}")
+            if not ok:
+                _failed_urls.add(url)
+            return ok
+        except Exception as e:
+            print(f"[!] Gagal mengunduh {url} ({e})")
+            break
+    _failed_urls.add(url)
+    return False
 
 def remux_clip(raw: str, dest: str) -> bool:
     """Salin ulang stream video ke MKV agar durasi sesuai data yang benar-benar terunduh.

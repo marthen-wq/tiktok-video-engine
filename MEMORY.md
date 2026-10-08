@@ -29,6 +29,7 @@ Catatan berumur panjang untuk manusia dan agen AI. Tambahkan entri baru di bagia
 - Sandbox pengembangan memblokir Wikimedia dan Pixabay; unduhan nyata hanya bisa diuji di runner.
 - Run Actions #2 (2026-10-08, commit `41c345c`): ketiga klip Wikimedia dan BGM Pixabay (2:27, stereo) terunduh; `WordBoundary (68 kata)`; install dependensi 2 menit (PyTorch + CUDA dari Whisper), render 4 menit 15 detik.
 - Run yang sama menemukan bug: background hanya 10,7 s dari 33,9 s, sehingga video diam ~22 s. Unduhan terpotong 15 MB tetap membawa header durasi penuh (terbukti lokal: header 120 s, data 15,9 s). Pemicu persisnya tidak bisa direproduksi tanpa file asli; diperbaiki dengan remux, validasi panjang segmen, dan perpanjangan frame terakhir.
+- Run #3 (`d2c7a26`): background 34,0 s dan frame berjalan sampai akhir, tetapi Wikimedia membalas **429 Too Many Requests** untuk keempat unduhan (User-Agent `Mozilla/5.0`), sehingga seluruh background warna polos. Jalur footage asli setelah perbaikan durasi belum teruji. Perbaikan: User-Agent deskriptif + retry sesuai `Retry-After`.
 
 ## Hal yang belum benar (jangan diklaim sudah ada)
 

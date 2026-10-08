@@ -173,7 +173,7 @@ Segment         : temp/seg_<i>.mp4                 # 1080x1920, 30 fps, tanpa au
 3. Kolom B (tema) dibaca tetapi tidak memengaruhi pemilihan footage.
 4. Kolom E berisi teks, bukan tautan; `DONE` ditulis sebelum artifact diunggah.
 5. (selesai) BGM kini di-loop dengan `-stream_loop -1`.
-6. Footage dan BGM terunduh di runner, tetapi User-Agent `Mozilla/5.0` tidak sesuai kebijakan Wikimedia (bisa dibatasi sewaktu-waktu). Perbaikan background pendek belum dijalankan ulang di runner.
+6. Wikimedia membatasi unduhan dari runner: run #2 berhasil, run #3 mendapat 429 untuk semua klip dengan User-Agent `Mozilla/5.0`. Kini memakai `USER_AGENT` deskriptif (URL repo sebagai kontak), retry hingga `DOWNLOAD_ATTEMPTS` kali sesuai `Retry-After`, dan URL yang gagal tidak dicoba ulang dalam run yang sama. Bila batas IP tetap kena, run tetap hijau tetapi background polos; sumber footage berlisensi dengan API key (mis. Pexels) adalah jalan keluar jangka panjang.
 7. Pool footage hanya 3 URL sementara video bisa memakai 4 klip.
 8. Secret `OMNIROUTE_*` dan dependensi berat belum dipakai.
 9. `repository_dispatch` tidak meneruskan `client_payload` sebagai quote.
