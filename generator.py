@@ -248,36 +248,69 @@ def _retry_wait(resp, attempt: int) -> float:
     except ValueError:
         return min(MAX_RETRY_WAIT, 2.0 * 2 ** attempt)
 
-def download_clip(url: str, dest: str) -> bool:
-    """Unduh footage (maks ~15MB). True hanya jika hasilnya video yang bisa dibaca ffprobe."""
-    if os.path.exists(dest) and probe_duration(dest) > 0:
-        return True
-    if url in _failed_urls:
-        return False
+WIKIMEDIA_PREFIX = "https://upload.wikimedia.org/wikipedia/commons/"
+TRANSCODE_KEYS = ["1080p.vp9.webm", "720p.vp9.webm", "720p.webm"]
+
+def footage_candidates(url: str):
+    """URL unduhan berurutan: versi transcode Wikimedia dulu, file asli terakhir.
+
+    File asli di Commons sering 4K berbitrate sangat tinggi: 15MB pertama hanya berisi
+    ~1-2 detik gambar (terlihat di run #4), sehingga segmen 9 detik menjadi loop tersendat.
+    """
+    if not url.startswith(WIKIMEDIA_PREFIX):
+        return [url]
+    path = url[len(WIKIMEDIA_PREFIX):]          # c/c3/Nama.webm
+    name = path.rsplit("/", 1)[-1]
+    base = f"{WIKIMEDIA_PREFIX}transcoded/{path}/{name}"
+    return [f"{base}.{key}" for key in TRANSCODE_KEYS] + [url]
+
+def _download_one(url: str, dest: str) -> str:
+    """Satu kandidat URL. Hasil: 'ok', 'missing' (coba kandidat lain), atau 'limited' (berhenti)."""
     for attempt in range(DOWNLOAD_ATTEMPTS):
         try:
             r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30, stream=True)
-            if r.status_code in (429, 503) and attempt < DOWNLOAD_ATTEMPTS - 1:
-                wait = _retry_wait(r, attempt)
-                print(f"[!] {r.status_code} dari {url.split('/')[2]}, coba lagi dalam {wait:.0f}s")
-                r.close()
-                time.sleep(wait)
-                continue
-            r.raise_for_status()
-            size = 0
+        except Exception as e:
+            print(f"[!] Gagal mengunduh {url} ({e})")
+            return "missing"
+        if r.status_code in (429, 503):
+            r.close()
+            if attempt == DOWNLOAD_ATTEMPTS - 1:
+                print(f"[!] {r.status_code} terus-menerus dari {url.split('/')[2]}, berhenti mencoba")
+                return "limited"
+            wait = _retry_wait(r, attempt)
+            print(f"[!] {r.status_code} dari {url.split('/')[2]}, coba lagi dalam {wait:.0f}s")
+            time.sleep(wait)
+            continue
+        if r.status_code != 200:
+            r.close()
+            return "missing"
+        size = 0
+        try:
             with open(dest, "wb") as f:
                 for chunk in r.iter_content(chunk_size=1024 * 1024):
                     f.write(chunk)
                     size += len(chunk)
                     if size > 15 * 1024 * 1024:
                         break
-            ok = probe_duration(dest) > 0
-            print(f"[{'+' if ok else '!'}] Klip {os.path.basename(url)[:40]}: {size // 1024} KB, {'valid' if ok else 'tidak terbaca'}")
-            if not ok:
-                _failed_urls.add(url)
-            return ok
         except Exception as e:
-            print(f"[!] Gagal mengunduh {url} ({e})")
+            print(f"[!] Unduhan terputus {url} ({e})")
+            return "missing"
+        ok = probe_duration(dest) > 0
+        print(f"[{'+' if ok else '!'}] Klip {url.rsplit('/', 1)[-1][:60]}: {size // 1024} KB, {'valid' if ok else 'tidak terbaca'}")
+        return "ok" if ok else "missing"
+    return "limited"
+
+def download_clip(url: str, dest: str) -> bool:
+    """Unduh footage (maks ~15MB) dari kandidat terbaik. True jika hasilnya video yang terbaca ffprobe."""
+    if os.path.exists(dest) and probe_duration(dest) > 0:
+        return True
+    if url in _failed_urls:
+        return False
+    for candidate in footage_candidates(url):
+        result = _download_one(candidate, dest)
+        if result == "ok":
+            return True
+        if result == "limited":
             break
     _failed_urls.add(url)
     return False

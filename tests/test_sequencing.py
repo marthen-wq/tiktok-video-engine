@@ -210,5 +210,52 @@ class DownloadRetryTest(unittest.TestCase):
         self.assertTrue(all(w <= generator.MAX_RETRY_WAIT for (w,), _ in self.sleep.call_args_list))
 
 
+class FootageCandidateTest(unittest.TestCase):
+    """Run Actions #4: file asli 4K hanya memberi 0,9-2,4 s gambar per 15MB."""
+
+    URL = "https://upload.wikimedia.org/wikipedia/commons/4/49/Nature_montage_around_Aberfeldy.webm"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        clip = os.path.join(self.tmp.name, "real.webm")
+        make_clip(clip, "green", seconds=3)
+        with open(clip, "rb") as fh:
+            self.body = fh.read()
+        generator._failed_urls.clear()
+        mock.patch.object(generator.time, "sleep").start()
+
+    def tearDown(self):
+        mock.patch.stopall()
+        generator._failed_urls.clear()
+        self.tmp.cleanup()
+
+    def test_transcodes_come_before_original(self):
+        c = generator.footage_candidates(self.URL)
+        self.assertEqual(c[0], "https://upload.wikimedia.org/wikipedia/commons/transcoded/4/49/"
+                               "Nature_montage_around_Aberfeldy.webm/Nature_montage_around_Aberfeldy.webm.1080p.vp9.webm")
+        self.assertEqual(c[-1], self.URL)
+        self.assertEqual(generator.footage_candidates("https://example.com/a.mp4"), ["https://example.com/a.mp4"])
+
+    def test_missing_transcodes_fall_through_to_original(self):
+        def get(url, **kw):
+            return FakeResponse(200, self.body) if url == self.URL else FakeResponse(404)
+        g = mock.patch.object(generator.requests, "get", side_effect=get).start()
+        self.assertTrue(generator.download_clip(self.URL, os.path.join(self.tmp.name, "o.webm")))
+        self.assertEqual(g.call_count, len(generator.TRANSCODE_KEYS) + 1)
+
+    def test_first_available_transcode_is_used(self):
+        g = mock.patch.object(generator.requests, "get",
+                              side_effect=lambda url, **kw: FakeResponse(200, self.body)).start()
+        self.assertTrue(generator.download_clip(self.URL, os.path.join(self.tmp.name, "t.webm")))
+        self.assertEqual(g.call_count, 1)
+        self.assertIn("/transcoded/", g.call_args.args[0])
+
+    def test_rate_limit_stops_trying_other_candidates(self):
+        g = mock.patch.object(generator.requests, "get",
+                              side_effect=lambda url, **kw: FakeResponse(429)).start()
+        self.assertFalse(generator.download_clip(self.URL, os.path.join(self.tmp.name, "r.webm")))
+        self.assertEqual(g.call_count, generator.DOWNLOAD_ATTEMPTS)  # hanya kandidat pertama
+
+
 if __name__ == "__main__":
     unittest.main()
