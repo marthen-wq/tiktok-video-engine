@@ -31,6 +31,7 @@ Catatan berumur panjang untuk manusia dan agen AI. Tambahkan entri baru di bagia
 - Run yang sama menemukan bug: background hanya 10,7 s dari 33,9 s, sehingga video diam ~22 s. Unduhan terpotong 15 MB tetap membawa header durasi penuh (terbukti lokal: header 120 s, data 15,9 s). Pemicu persisnya tidak bisa direproduksi tanpa file asli; diperbaiki dengan remux, validasi panjang segmen, dan perpanjangan frame terakhir.
 - Run #3 (`d2c7a26`): background 34,0 s dan frame berjalan sampai akhir, tetapi Wikimedia membalas **429 Too Many Requests** untuk keempat unduhan (User-Agent `Mozilla/5.0`), sehingga seluruh background warna polos. Jalur footage asli setelah perbaikan durasi belum teruji. Perbaikan: User-Agent deskriptif + retry sesuai `Retry-After`.
 - Run #4 (`b9b8985`): 429 hilang. Akar masalah background pendek terungkap: file asli Commons berbitrate sangat tinggi, 15MB pertama hanya berisi 2,4 s (Rain) dan 0,9 s (Aberfeldy) gambar; Fog 10,1 s utuh. Durasi video benar (33,9 s) tetapi dua klip menjadi loop 0,9-2,4 s yang tersendat. Perbaikan: unduh versi transcode Wikimedia (`1080p.vp9.webm`, `720p.vp9.webm`, `720p.webm`) dulu, file asli sebagai cadangan.
+- Run #5 (`e6ca750`): transcode 1080p VP9 terunduh untuk ketiga klip. Footage terpakai: Fog 10,1 s, Rain 5,9 s (klipnya memang hanya 5,9 s, jadi segmen 9 s berisi satu loop), Aberfeldy 24,8 s. Background 33,9 s, frame berjalan sampai akhir, output 17,9 MB. Pool 3 klip untuk 4 segmen: klip ke-4 memakai ulang Fog dari titik yang hampir sama dengan klip pertama.
 
 ## Hal yang belum benar (jangan diklaim sudah ada)
 
@@ -42,7 +43,7 @@ Catatan berumur panjang untuk manusia dan agen AI. Tambahkan entri baru di bagia
 
 ## Pertanyaan terbuka
 
-1. Setelah perbaikan background pendek: segmen mana yang tadinya pendek? Log run berikutnya menampilkan baris `Segmen seg_N ... terlalu pendek` bila masih terjadi.
+1. Sumber footage jangka panjang: API Pexels (butuh `PEXELS_API_KEY`) agar pool lebih besar dan kolom B terpakai.
 2. Lisensi klip dan BGM cukup untuk monetisasi?
 3. Apa fungsi kolom C dan D di Sheet?
 4. Perlu penjadwalan harian otomatis (cron)?
