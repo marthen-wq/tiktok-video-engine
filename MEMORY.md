@@ -17,6 +17,13 @@ Catatan berumur panjang untuk manusia dan agen AI. Tambahkan entri baru di bagia
 | 2026-10-08 | Impor Google API dipindah ke dalam `get_sheets_service()` | Logika sequencing bisa diuji tanpa paket Google |
 | 2026-10-08 | Subtitle disinkronkan lewat event `WordBoundary` edge-tts (bukan Whisper): tanpa PyTorch, tanpa install berat. Cadangan berlapis bila event tidak ada | Whisper menambah GB dependensi dan waktu run |
 | 2026-10-08 | Ducking pakai `sidechaincompress`; `amix normalize=0`; narasi dual-mono lewat `pan` | `amix` default membagi dua level narasi; upmix mono→stereo biasa menurunkan 3 dB (terukur) |
+| 2026-10-08 | PR #1 di-merge ke `main` (`ca7c593`) | Audio, subtitle, dan musik dinilai pas oleh pemilik |
+| 2026-10-08 | Klip lebih pendek dari segmen diperlambat (maks 2x), bukan di-loop | Loop klip Rain dinilai pemilik "sangat kasar" |
+| 2026-10-08 | Semua footage gagal → run gagal (bukan video polos) | Keputusan pemilik; baris Sheet tetap READY untuk dicoba lagi |
+| 2026-10-08 | Pexels tidak bisa dipakai saat ini | Pexels: "New API key issuance is currently paused" |
+| 2026-10-08 | **Tidak ada layanan berbayar** kecuali pemilik secara eksplisit menyatakan mau membayar | Aturan pemilik |
+| 2026-10-08 | Footage dipilih sesuai isi narasi: kata yang diucapkan selama segmen tampil → `SCENE_KEYWORDS` → pencarian Wikimedia Commons (gratis, tanpa key) | Perintah pemilik: tema video harus sesuai isi narasi |
+| 2026-10-08 | Google Vids tidak dipakai | Tidak ada API publik; service account tidak bisa membuat video di Vids |
 | sebelumnya | Render serverless via GitHub Actions | Tanpa beban server fisik |
 | sebelumnya | Suara `id-ID-ArdiNeural`, subtitle ASS 3 kata, BGM piano ambient | Gaya narator berwibawa, emas di tengah layar |
 
@@ -36,14 +43,13 @@ Catatan berumur panjang untuk manusia dan agen AI. Tambahkan entri baru di bagia
 ## Hal yang belum benar (jangan diklaim sudah ada)
 
 - Subtitle belum punya highlight kata per kata (`\k`); hanya tampilan 3 kata yang tersinkron.
-- Level ducking baru diukur dengan nada uji, belum didengar dengan musik/suara asli.
 - Whisper tercantum di dependensi tetapi tidak dipakai (sinkronisasi memakai edge-tts).
 - Kolom B Sheet dan secret `OMNIROUTE_*` tidak dipakai kode.
 - Kolom E Sheet berisi teks biasa; `DONE` ditulis sebelum artifact terunggah.
 
 ## Pertanyaan terbuka
 
-1. Sumber footage jangka panjang: API Pexels (butuh `PEXELS_API_KEY`) agar pool lebih besar dan kolom B terpakai.
+1. Kualitas hasil pencarian Commons per adegan perlu dinilai pemilik dari video nyata.
 2. Lisensi klip dan BGM cukup untuk monetisasi?
 3. Apa fungsi kolom C dan D di Sheet?
 4. Perlu penjadwalan harian otomatis (cron)?

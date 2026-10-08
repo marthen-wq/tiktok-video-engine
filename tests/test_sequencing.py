@@ -83,13 +83,27 @@ class RenderSequenceTest(unittest.TestCase):
                  "stream=width,height", "-of", "csv=p=0", out]).decode().strip()
             self.assertEqual(w_h, "1080,1920")
 
-    def test_failed_download_uses_fallback_segment_and_keeps_length(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            generator.TEMP_DIR = tmp
-            generator.CINEMATIC_VIDEO_SOURCES = ["https://example.test/a.webm", "https://example.test/b.webm"]
-            generator.download_clip = lambda url, dest: False
+    def test_all_downloads_failing_aborts_the_run(self):
+        # keputusan pemilik: tanpa footage sama sekali, run gagal agar baris Sheet tetap READY
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(generator, "TEMP_DIR", tmp), \
+             mock.patch.object(generator, "CINEMATIC_VIDEO_SOURCES", ["https://example.test/a.webm", "https://example.test/b.webm"]), \
+             mock.patch.object(generator, "download_clip", return_value=False):
             out = os.path.join(tmp, "bg.mp4")
-            generator.prepare_background_video(20.0, out)
+            with self.assertRaises(RuntimeError):
+                generator.prepare_background_video(20.0, out)
+            self.assertFalse(os.path.exists(out))
+
+    def test_one_failed_download_uses_fallback_segment_and_keeps_length(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            good = os.path.join(tmp, "good.webm")
+            make_clip(good, "blue", seconds=12)
+            fetch = lambda url, dest: "bad" not in url and (subprocess.run(["cp", good, dest], check=True) or True)
+            with mock.patch.object(generator, "TEMP_DIR", tmp), \
+                 mock.patch.object(generator, "CINEMATIC_VIDEO_SOURCES", ["https://e.test/bad.webm", "https://e.test/ok.webm"]), \
+                 mock.patch.object(generator, "download_clip", side_effect=fetch):
+                out = os.path.join(tmp, "bg.mp4")
+                generator.prepare_background_video(20.0, out)
             self.assertAlmostEqual(generator.probe_duration(out), 21.5, delta=0.3)
 
 
@@ -128,25 +142,45 @@ class ShortSegmentRegressionTest(unittest.TestCase):
     def test_short_segment_from_random_start_is_redone_from_beginning(self):
         real_encode = generator.encode_segment
 
-        def flaky(clip, start, seg_len, out):  # titik acak menghasilkan segmen 2 s, seperti di runner
-            real_encode(clip, start, 2.0 if start is not None else seg_len, out)
+        def flaky(clip, start, seg_len, out, slow=1.0):  # titik acak menghasilkan segmen 2 s, seperti di runner
+            real_encode(clip, start, 2.0 if start is not None else seg_len, out, slow)
 
         out = os.path.join(self.dir, "seg.mp4")
         with mock.patch.object(generator, "encode_segment", side_effect=flaky):
             self.assertTrue(generator.make_segment(self._clip(), 8.5, out))
         self.assertAlmostEqual(generator.probe_duration(out), 8.5, delta=0.15)
 
-    def test_always_short_segments_fall_back_and_background_keeps_length(self):
+    def test_always_short_segments_mean_no_footage_and_abort(self):
         real_encode = generator.encode_segment
         clip_src = self._clip()
         with mock.patch.object(generator, "CINEMATIC_VIDEO_SOURCES", ["u/a", "u/b", "u/c"]), \
              mock.patch.object(generator, "download_clip",
                                side_effect=lambda u, d: subprocess.run(["cp", clip_src, d], check=True) or True), \
              mock.patch.object(generator, "encode_segment",
-                               side_effect=lambda c, st, n, o: real_encode(c, st, 2.0, o)):
-            out = os.path.join(self.dir, "bg.mp4")
-            generator.prepare_background_video(30.0, out)
-        self.assertAlmostEqual(generator.probe_duration(out), 31.5, delta=0.3)
+                               side_effect=lambda c, st, n, o, slow=1.0: real_encode(c, st, 2.0, o, slow)):
+            with self.assertRaises(RuntimeError):
+                generator.prepare_background_video(30.0, os.path.join(self.dir, "bg.mp4"))
+
+    def test_clip_shorter_than_segment_is_slowed_down_not_looped(self):
+        # merah 0-4 s lalu biru 4-5,9 s (seperti klip Rain 5,9 s di run #5)
+        src = os.path.join(self.dir, "rain.mkv")
+        subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=red:s=640x360:d=4:r=25",
+                        "-f", "lavfi", "-i", "color=c=blue:s=640x360:d=1.9:r=25",
+                        "-filter_complex", "[0:v][1:v]concat=n=2:v=1[v]", "-map", "[v]", src],
+                       check=True, stderr=subprocess.DEVNULL)
+        out = os.path.join(self.dir, "seg.mp4")
+        self.assertTrue(generator.make_segment(src, 9.1, out))
+        self.assertAlmostEqual(generator.probe_duration(out), 9.1, delta=0.15)
+        r, g, b = frame_rgb(out, 8.8)
+        self.assertGreater(b, r)  # loop akan kembali ke merah di sini; slow-motion masih di bagian biru
+        r0, _, b0 = frame_rgb(out, 0.5)
+        self.assertGreater(r0, b0)
+
+    def test_clip_far_too_short_still_loops(self):
+        src = self._clip(seconds=3)
+        out = os.path.join(self.dir, "seg.mp4")
+        self.assertTrue(generator.make_segment(src, 9.1, out))  # 3,03x > MAX_SLOWDOWN: loop
+        self.assertAlmostEqual(generator.probe_duration(out), 9.1, delta=0.15)
 
     def test_short_crossfade_result_is_extended_to_target(self):
         out = os.path.join(self.dir, "short.mp4")

@@ -17,12 +17,14 @@ QUOTE_INPUT="Teks uji" python3 generator.py        # local run, skips Google She
 
 ## Rules
 1. **Verify before claiming.** Run the tests after touching `generator.py`. If something could not be run (network, credentials, edge-tts), say so; do not describe it as working.
-2. **Keep the pipeline degrading, not failing.** A failed footage or BGM download must fall back, not abort the render.
+2. **Degrade, except with no footage at all.** A failed clip or BGM download falls back and the render continues. If every clip fails, `prepare_background_video` raises so the run goes red and the Sheet row stays `READY` (owner's decision).
 3. **Sequencing invariant.** Background length must equal `total`: `n*seg - (n-1)*xf == total`, with 3–4 clips. Keep `plan_sequence` tests green.
 4. **Secrets.** Never print, log or commit `GCP_SERVICE_ACCOUNT_KEY` or other secrets. Do not add a credentials file to the repo.
 5. **Subprocess safety.** Call `ffmpeg`/`ffprobe` with argument lists, never `shell=True`; quote text comes from the Sheet and is untrusted.
 6. **Style.** Match the file: Indonesian log messages and comments, `[*]` progress, `[+]` success, `[!]` warning. Keep `generator.py` importable without Google packages (imports live inside `get_sheets_service`).
 7. **Docs stay true.** When behaviour changes, update `ARCHITECTURE.md` (and the Essentials summary if a critical decision changed), the "real vs. not yet" list in `CLAUDE.md`, and add a dated entry to `MEMORY.md`.
+9. **No paid services.** Never add or propose a paid API/service unless the owner explicitly says they want to pay. Prefer free, keyless sources.
+10. **Footage follows the narration.** Do not offer alternative themes; footage must match what is being said.
 8. **Git.** Work on the branch you were given; do not push to `main` or open a PR unless asked. Commit messages: imperative, one concern per commit.
 
 ## Do not

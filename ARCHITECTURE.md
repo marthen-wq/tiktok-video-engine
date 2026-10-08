@@ -62,11 +62,21 @@ Langkah per video:
 1. `pick_clip_urls(n)` memilih URL tanpa pengulangan selama pool cukup; bila pool lebih kecil dari `n` (saat ini pool = 3, `n` bisa 4), klip dipakai ulang tetapi tidak pernah berurutan.
 2. `download_clip` mencoba kandidat dari `footage_candidates` berurutan: versi transcode Commons (`TRANSCODE_KEYS`: 1080p VP9, 720p VP9, 720p VP8), lalu file asli. Maks ~15 MB, divalidasi `ffprobe`, disimpan ke `temp/raw_<i>.webm`. Status 404 → kandidat berikutnya; 429/503 terus-menerus → berhenti (tidak membanjiri server). File asli Commons sering 4K berbitrate sangat tinggi: di run #4, 15 MB hanya berisi 0,9–2,4 s gambar.
 3. `remux_clip` menyalin stream video ke `temp/clip_<i>.mkv` (`-c copy`) sehingga durasi = data yang benar-benar terunduh. Unduhan terpotong tetap membawa header durasi penuh, jadi tanpa langkah ini titik mulai acak bisa jatuh di luar data.
-4. `make_segment` memotong `seg` detik dari titik acak klip, lalu: scale + crop 1080x1920, `fps=30`, `eq` (brightness -0.15, contrast 1.2), `vignette`, `format=yuv420p`. Klip pendek di-loop. Hasilnya diperiksa: bila lebih pendek dari `seg − 0,15 s`, segmen diulang dari awal klip; bila tetap pendek, klip dianggap gagal.
+4. `make_segment` memotong `seg` detik dari titik acak klip, lalu: scale + crop 1080x1920, `fps=30`, `eq` (brightness -0.15, contrast 1.2), `vignette`, `format=yuv420p`. Klip yang lebih pendek dari segmen diperlambat agar pas (`setpts`, maks `MAX_SLOWDOWN` = 2x), karena loop menghasilkan lompatan gambar yang kasar (klip Rain 5,9 s di run #5); hanya klip yang lebih pendek dari setengah segmen yang di-loop. Hasilnya diperiksa: bila lebih pendek dari `seg − 0,15 s`, segmen diulang dari awal klip; bila tetap pendek, klip dianggap gagal.
 5. Gagal unduh / remux / segmen → `make_fallback_segment` (warna polos `0x0d1117`) menggantikan hanya klip itu, jadi jumlah klip dan durasi tetap utuh.
 6. `crossfade_segments` merangkai semua segmen dengan filter `xfade`, transisi bergantian `fade`, `dissolve`, `fadeblack`.
 
 Hasil uji (`tests/test_sequencing.py`): 4 klip berwarna berbeda untuk 30 detik, warna dominan berganti di tiap segmen, durasi 31,5 s, resolusi 1080x1920. Di runner (run #2) unduhan Wikimedia berhasil tetapi background hanya 10,7 s dari 33,9 s; langkah 3, validasi di langkah 4, dan `extend_to_duration` (tahan frame terakhir bila rangkaian akhir masih pendek) ditambahkan untuk itu. Tes regresi ada di `ShortSegmentRegressionTest`.
+
+### 3a. Footage sesuai isi narasi
+
+`main` menghitung `timings = build_word_timings(...)` dan meneruskannya ke `prepare_background_video`. `plan_clip_sources`:
+1. `segment_texts`: kata yang diucapkan selama tiap segmen tampil (rentang `[i·(seg−xf), i·(seg−xf)+seg)`).
+2. `scenes_in_text`: akar kata Indonesia (boleh berawalan me-/ber-/di-/…, hanya di awal kata) → adegan visual dari `SCENE_KEYWORDS` (mis. ditempa → blacksmith forging, pagi → sunrise, langkah → walking, panggung → stage lights).
+3. `search_commons_videos`: Wikimedia Commons search API (`filetype:video`, gratis, tanpa key, `USER_AGENT` deskriptif), hanya `mediatype=VIDEO` dengan lebar ≥ 640, satu dipilih acak dari 4 teratas.
+4. Urutan cadangan: adegan lain di segmen itu → adegan dari bagian lain narasi → `CINEMATIC_VIDEO_SOURCES`. Tidak ada URL yang dipakai dua kali; tiap adegan dicari sekali.
+
+Nama file sementara memakai hash URL (`raw_<md5>.webm`). Kualitas hasil pencarian bergantung pada isi Commons dan belum dinilai di video nyata.
 
 ### 3b. Sinkronisasi subtitle dan ducking audio
 
@@ -148,7 +158,7 @@ Segment         : temp/seg_<i>.mp4                 # 1080x1920, 30 fps, tanpa au
 | Tidak ada `GCP_SERVICE_ACCOUNT_KEY` | Sheet dilewati, memakai quote bawaan di kode |
 | Tidak ada baris `READY` | Memakai quote bawaan; status tidak diubah |
 | Klip footage gagal / bukan video | Segmen itu diganti warna polos; sisanya tetap |
-| Semua klip gagal | Video berupa warna polos dengan crossfade |
+| Semua klip gagal | `RuntimeError`, run merah, video tidak dirender, baris Sheet tetap `READY` (keputusan pemilik 2026-10-08) |
 | BGM gagal diunduh | Nada sinus 110 Hz, volume rendah |
 | FFmpeg error | `check=True` melempar exception; run merah |
 | Update Sheet gagal | Exception; MP4 tetap tidak terunggah karena langkah upload berikutnya tidak jalan |
@@ -170,7 +180,7 @@ Segment         : temp/seg_<i>.mp4                 # 1080x1920, 30 fps, tanpa au
 
 1. Level ducking (`BGM_VOLUME`, `DUCK_*`) baru diukur dengan nada uji, belum didengar dengan musik dan suara asli.
 2. Subtitle tersinkron per tampilan 3 kata; belum ada highlight kata per kata (`\k`). `id-ID-ArdiNeural` terbukti mengirim `WordBoundary` di runner.
-3. Kolom B (tema) dibaca tetapi tidak memengaruhi pemilihan footage.
+3. Kolom B (tema) dibaca tetapi tidak dipakai; footage kini mengikuti isi narasi (bagian 3a).
 4. Kolom E berisi teks, bukan tautan; `DONE` ditulis sebelum artifact diunggah.
 5. (selesai) BGM kini di-loop dengan `-stream_loop -1`.
 6. Wikimedia membatasi unduhan dari runner: run #2 berhasil, run #3 mendapat 429 untuk semua klip dengan User-Agent `Mozilla/5.0`. Kini memakai `USER_AGENT` deskriptif (URL repo sebagai kontak), retry hingga `DOWNLOAD_ATTEMPTS` kali sesuai `Retry-After`, dan URL yang gagal tidak dicoba ulang dalam run yang sama. Bila batas IP tetap kena, run tetap hijau tetapi background polos; sumber footage berlisensi dengan API key (mis. Pexels) adalah jalan keluar jangka panjang.

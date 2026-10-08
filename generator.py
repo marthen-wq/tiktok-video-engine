@@ -11,6 +11,8 @@ import os
 import sys
 import json
 import math
+import hashlib
+import re
 import random
 import asyncio
 import subprocess
@@ -225,6 +227,109 @@ def pick_clip_urls(n: int):
         picks.append(random.choice([u for u in pool if u != picks[-1]] or pool))
     return picks
 
+# Pemetaan kata narasi (akar kata Indonesia) -> adegan visual (kata kunci pencarian Wikimedia Commons).
+# Urutan penting: entri yang lebih spesifik ditaruh lebih dulu.
+SCENE_KEYWORDS = [
+    (("ditempa", "tempa", "menempa"), "blacksmith forging"),
+    (("panggung",), "stage lights"),
+    (("hujan",), "rain"),
+    (("kabut",), "fog"),
+    (("badai", "petir"), "storm clouds"),
+    (("ombak", "laut", "pantai", "samudra"), "ocean waves"),
+    (("gunung", "puncak", "mendaki", "daki"), "mountain"),
+    (("hutan", "pohon"), "forest"),
+    (("sungai", "air terjun"), "waterfall"),
+    (("api", "semangat", "membara"), "fire"),
+    (("pagi", "fajar", "terbit", "datang"), "sunrise"),
+    (("senja", "sore", "terbenam"), "sunset"),
+    (("malam", "gelap"), "night sky"),
+    (("bintang",), "stars timelapse"),
+    (("langit", "awan"), "clouds timelapse"),
+    (("cahaya", "terang", "harapan"), "sunlight"),
+    (("waktu", "menunggu", "sabar", "pelan"), "clock"),
+    (("tumbuh", "membentuk", "bentuk", "proses", "titik nol", "awal", "mulai"), "plant growing"),
+    (("langkah", "jalan", "berjalan", "melangkah", "perjalanan"), "walking"),
+    (("lari", "berlari", "berhenti"), "running"),
+    (("lelah", "berat", "beban", "ragu", "menyerah"), "rain window"),
+    (("orang lain", "membandingkan", "banding", "kota", "ramai"), "city crowd"),
+    (("sendiri", "sunyi", "ruang", "tidak dilihat"), "empty road"),
+]
+INDONESIAN_PREFIXES = "memper|mem|men|meng|meny|me|ber|be|di|ter|se|ke|pe|per"
+COMMONS_API = "https://commons.wikimedia.org/w/api.php"
+COMMONS_RESULTS = 8  # kandidat teratas per adegan; satu dipilih acak agar video tidak selalu sama
+
+def scenes_in_text(text: str):
+    """Adegan visual yang disebut dalam teks, berurutan menurut kemunculan pertama."""
+    low = " " + re.sub(r"[^a-z0-9 ]+", " ", text.lower()) + " "
+    found = []
+    for roots, term in SCENE_KEYWORDS:
+        # akar kata di awal kata, boleh didahului awalan Indonesia (me-, ber-, di-, ...); "api" tidak cocok dengan "lapisan"
+        pattern = r"\s(?:" + INDONESIAN_PREFIXES + r")?(?:" + "|".join(re.escape(r) for r in roots) + r")"
+        m = re.search(pattern, low)
+        if m:
+            found.append((m.start(), term))
+    seen, out = set(), []
+    for _, term in sorted(found):
+        if term not in seen:
+            seen.add(term)
+            out.append(term)
+    return out
+
+def segment_texts(timings, n: int, seg_len: float, xf: float):
+    """Kata-kata yang diucapkan selama setiap segmen tampil (berdasarkan waktu WordBoundary)."""
+    texts = []
+    for i in range(n):
+        t0 = i * (seg_len - xf)
+        t1 = t0 + seg_len
+        texts.append(" ".join(w for w, start, _ in timings if t0 <= start < t1))
+    return texts
+
+def search_commons_videos(term: str):
+    """URL video Wikimedia Commons untuk satu adegan (search API resmi, gratis, tanpa API key)."""
+    try:
+        r = requests.get(COMMONS_API, headers={"User-Agent": USER_AGENT}, timeout=20, params={
+            "action": "query", "format": "json", "generator": "search", "gsrnamespace": 6,
+            "gsrsearch": f"filetype:video {term}", "gsrlimit": COMMONS_RESULTS,
+            "prop": "imageinfo", "iiprop": "url|size|mediatype",
+        })
+        r.raise_for_status()
+        pages = sorted(r.json().get("query", {}).get("pages", {}).values(), key=lambda p: p.get("index", 0))
+    except Exception as e:
+        print(f"[!] Pencarian Commons '{term}' gagal ({e})")
+        return []
+    urls = []
+    for page in pages:
+        info = (page.get("imageinfo") or [{}])[0]
+        if info.get("mediatype") == "VIDEO" and info.get("url", "").startswith(WIKIMEDIA_PREFIX) \
+                and info.get("width", 0) >= 640:
+            urls.append(info["url"])
+    return urls
+
+def plan_clip_sources(n: int, seg_len: float, xf: float, timings):
+    """Pilih footage per segmen sesuai isi narasi yang diucapkan saat segmen itu tampil.
+
+    Urutan: adegan dari kata di segmen itu -> adegan dari bagian lain narasi -> pool CINEMATIC_VIDEO_SOURCES.
+    """
+    all_scenes = scenes_in_text(" ".join(w for w, _, _ in timings))
+    cache, used, picks = {}, set(), []
+    for i, words in enumerate(segment_texts(timings, n, seg_len, xf)):
+        chosen = None
+        for term in scenes_in_text(words) + all_scenes:
+            if term not in cache:
+                cache[term] = search_commons_videos(term)
+            options = [u for u in cache[term] if u not in used]
+            if options:
+                chosen = random.choice(options[:4])
+                print(f"[*] Segmen {i + 1}: adegan '{term}' dari narasi \"{words[:60]}\"")
+                break
+        if chosen is None:
+            pool = [u for u in CINEMATIC_VIDEO_SOURCES if u not in used] or CINEMATIC_VIDEO_SOURCES
+            chosen = random.choice(pool)
+            print(f"[!] Segmen {i + 1}: tidak ada adegan yang cocok, memakai footage cadangan")
+        used.add(chosen)
+        picks.append(chosen)
+    return picks
+
 def probe_duration(path: str) -> float:
     try:
         out = subprocess.check_output(
@@ -329,24 +434,39 @@ def remux_clip(raw: str, dest: str) -> bool:
     return real > 0
 
 SEGMENT_TOLERANCE = 0.15  # toleransi pembulatan frame saat memeriksa panjang segmen (detik)
+MAX_SLOWDOWN = 2.0        # klip lebih pendek dari segmen diperlambat sampai 2x; di atas itu baru di-loop
 
-def encode_segment(clip: str, start, seg_len: float, out_path: str):
+def encode_segment(clip: str, start, seg_len: float, out_path: str, slow: float = 1.0):
     cmd = ["ffmpeg", "-y", "-v", "error"]
     if start is not None:
         cmd += ["-ss", f"{start:.2f}"]
+    vf = VIDEO_FILTER if slow <= 1.0 else f"setpts={slow:.4f}*PTS,{VIDEO_FILTER}"
     cmd += ["-stream_loop", "-1", "-i", clip, "-t", f"{seg_len:.3f}", "-an",
-            "-vf", VIDEO_FILTER, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", out_path]
+            "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", out_path]
     subprocess.run(cmd, check=True)
 
 def make_segment(clip: str, seg_len: float, out_path: str) -> bool:
-    """Potong satu segmen vertikal 9:16 dari titik acak; ulangi dari awal klip bila hasilnya kurang panjang."""
+    """Potong satu segmen vertikal 9:16 dari klip.
+
+    Klip panjang: mulai dari titik acak. Klip lebih pendek dari segmen: diperlambat agar pas
+    (loop membuat lompatan gambar yang kasar, terlihat pada klip Rain 5,9 s di run #5).
+    Bila hasilnya kurang panjang, diulang dari awal klip dengan loop.
+    """
     clip_len = probe_duration(clip)
-    starts = [random.uniform(0, clip_len - seg_len - 0.25)] if clip_len > seg_len + 0.5 else []
+    attempts = []
+    if clip_len > seg_len + 0.5:
+        attempts.append((random.uniform(0, clip_len - seg_len - 0.25), 1.0))
+    elif 0 < clip_len and seg_len / clip_len <= MAX_SLOWDOWN:
+        attempts.append((None, seg_len / clip_len * 1.02))  # sedikit lebih lambat agar loop tidak tersentuh
+    attempts.append((None, 1.0))
     name = os.path.basename(out_path)
-    for start in starts + [None]:
-        label = f"mulai {start:.1f}s" if start is not None else "dari awal (loop)"
+    for start, slow in attempts:
+        if slow > 1.0:
+            label = f"diperlambat {1 / slow:.2f}x"
+        else:
+            label = f"mulai {start:.1f}s" if start is not None else "dari awal (loop)"
         try:
-            encode_segment(clip, start, seg_len, out_path)
+            encode_segment(clip, start, seg_len, out_path, slow)
         except subprocess.CalledProcessError as e:
             print(f"[!] Segmen {name} gagal di-encode ({label}): {e}")
             continue
@@ -397,24 +517,32 @@ def extend_to_duration(path: str, total: float):
     ], check=True)
     os.replace(padded, path)
 
-def prepare_background_video(target_duration: float, output_path: str):
-    """Susun 3-4 klip footage berbeda (9:16, 1080x1920) dengan crossfade halus."""
+def prepare_background_video(target_duration: float, output_path: str, timings=None):
+    """Susun 3-4 klip footage (9:16, 1080x1920) dengan crossfade halus.
+
+    Dengan `timings` (waktu tiap kata narasi), footage tiap segmen dipilih sesuai isi narasi.
+    """
     total = target_duration + 1.5
     n, seg_len, xf, offsets = plan_sequence(total)
-    urls = pick_clip_urls(n)
+    urls = plan_clip_sources(n, seg_len, xf, timings) if timings else pick_clip_urls(n)
     print(f"[*] Menyusun {n} klip x {seg_len:.1f}s (crossfade {xf:.1f}s) untuk video {total:.1f}s...")
 
-    segments = []
+    segments, real_clips = [], 0
     for i, url in enumerate(urls):
-        idx = CINEMATIC_VIDEO_SOURCES.index(url)
-        raw = os.path.join(TEMP_DIR, f"raw_{idx}.webm")
-        clip = os.path.join(TEMP_DIR, f"clip_{idx}.mkv")
+        key = hashlib.md5(url.encode()).hexdigest()[:10]
+        raw = os.path.join(TEMP_DIR, f"raw_{key}.webm")
+        clip = os.path.join(TEMP_DIR, f"clip_{key}.mkv")
         seg_path = os.path.join(TEMP_DIR, f"seg_{i}.mp4")
         ok = download_clip(url, raw) and remux_clip(raw, clip) and make_segment(clip, seg_len, seg_path)
+        real_clips += ok
         if not ok:
             print(f"[!] Klip {i + 1} memakai visual cadangan")
             make_fallback_segment(seg_len, seg_path)
         segments.append(seg_path)
+
+    if real_clips == 0:
+        # Keputusan pemilik: tanpa footage sama sekali, run harus gagal (baris Sheet tetap READY)
+        raise RuntimeError("Semua footage gagal diunduh/diproses; video tidak dirender")
 
     crossfade_segments(segments, seg_len, xf, offsets, output_path)
     extend_to_duration(output_path, total)
@@ -510,10 +638,11 @@ def main():
 
     # 2. Rancang Subtitle Dinamis (ASS)
     create_ass_subtitles(quote, duration, ass_path, events)
+    timings = build_word_timings(quote, events, duration)
 
     # 3. Video Footage Bergerak Asli & Musik Latar
     prepare_bgm(bgm_path)
-    prepare_background_video(duration, bg_video)
+    prepare_background_video(duration, bg_video, timings)
 
     # 4. Render Video Akhir
     render_shorts_video(bg_video, audio_path, bgm_path, ass_path, final_video, duration)
