@@ -1,0 +1,7 @@
+output/
+temp/
+assets/
+__pycache__/
+*.pyc
+*.json.key
+service-account*.json
