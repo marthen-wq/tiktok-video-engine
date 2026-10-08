@@ -329,24 +329,39 @@ def remux_clip(raw: str, dest: str) -> bool:
     return real > 0
 
 SEGMENT_TOLERANCE = 0.15  # toleransi pembulatan frame saat memeriksa panjang segmen (detik)
+MAX_SLOWDOWN = 2.0        # klip lebih pendek dari segmen diperlambat sampai 2x; di atas itu baru di-loop
 
-def encode_segment(clip: str, start, seg_len: float, out_path: str):
+def encode_segment(clip: str, start, seg_len: float, out_path: str, slow: float = 1.0):
     cmd = ["ffmpeg", "-y", "-v", "error"]
     if start is not None:
         cmd += ["-ss", f"{start:.2f}"]
+    vf = VIDEO_FILTER if slow <= 1.0 else f"setpts={slow:.4f}*PTS,{VIDEO_FILTER}"
     cmd += ["-stream_loop", "-1", "-i", clip, "-t", f"{seg_len:.3f}", "-an",
-            "-vf", VIDEO_FILTER, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", out_path]
+            "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", out_path]
     subprocess.run(cmd, check=True)
 
 def make_segment(clip: str, seg_len: float, out_path: str) -> bool:
-    """Potong satu segmen vertikal 9:16 dari titik acak; ulangi dari awal klip bila hasilnya kurang panjang."""
+    """Potong satu segmen vertikal 9:16 dari klip.
+
+    Klip panjang: mulai dari titik acak. Klip lebih pendek dari segmen: diperlambat agar pas
+    (loop membuat lompatan gambar yang kasar, terlihat pada klip Rain 5,9 s di run #5).
+    Bila hasilnya kurang panjang, diulang dari awal klip dengan loop.
+    """
     clip_len = probe_duration(clip)
-    starts = [random.uniform(0, clip_len - seg_len - 0.25)] if clip_len > seg_len + 0.5 else []
+    attempts = []
+    if clip_len > seg_len + 0.5:
+        attempts.append((random.uniform(0, clip_len - seg_len - 0.25), 1.0))
+    elif 0 < clip_len and seg_len / clip_len <= MAX_SLOWDOWN:
+        attempts.append((None, seg_len / clip_len * 1.02))  # sedikit lebih lambat agar loop tidak tersentuh
+    attempts.append((None, 1.0))
     name = os.path.basename(out_path)
-    for start in starts + [None]:
-        label = f"mulai {start:.1f}s" if start is not None else "dari awal (loop)"
+    for start, slow in attempts:
+        if slow > 1.0:
+            label = f"diperlambat {1 / slow:.2f}x"
+        else:
+            label = f"mulai {start:.1f}s" if start is not None else "dari awal (loop)"
         try:
-            encode_segment(clip, start, seg_len, out_path)
+            encode_segment(clip, start, seg_len, out_path, slow)
         except subprocess.CalledProcessError as e:
             print(f"[!] Segmen {name} gagal di-encode ({label}): {e}")
             continue
@@ -404,17 +419,22 @@ def prepare_background_video(target_duration: float, output_path: str):
     urls = pick_clip_urls(n)
     print(f"[*] Menyusun {n} klip x {seg_len:.1f}s (crossfade {xf:.1f}s) untuk video {total:.1f}s...")
 
-    segments = []
+    segments, real_clips = [], 0
     for i, url in enumerate(urls):
         idx = CINEMATIC_VIDEO_SOURCES.index(url)
         raw = os.path.join(TEMP_DIR, f"raw_{idx}.webm")
         clip = os.path.join(TEMP_DIR, f"clip_{idx}.mkv")
         seg_path = os.path.join(TEMP_DIR, f"seg_{i}.mp4")
         ok = download_clip(url, raw) and remux_clip(raw, clip) and make_segment(clip, seg_len, seg_path)
+        real_clips += ok
         if not ok:
             print(f"[!] Klip {i + 1} memakai visual cadangan")
             make_fallback_segment(seg_len, seg_path)
         segments.append(seg_path)
+
+    if real_clips == 0:
+        # Keputusan pemilik: tanpa footage sama sekali, run harus gagal (baris Sheet tetap READY)
+        raise RuntimeError("Semua footage gagal diunduh/diproses; video tidak dirender")
 
     crossfade_segments(segments, seg_len, xf, offsets, output_path)
     extend_to_duration(output_path, total)

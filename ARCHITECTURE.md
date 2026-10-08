@@ -62,7 +62,7 @@ Langkah per video:
 1. `pick_clip_urls(n)` memilih URL tanpa pengulangan selama pool cukup; bila pool lebih kecil dari `n` (saat ini pool = 3, `n` bisa 4), klip dipakai ulang tetapi tidak pernah berurutan.
 2. `download_clip` mencoba kandidat dari `footage_candidates` berurutan: versi transcode Commons (`TRANSCODE_KEYS`: 1080p VP9, 720p VP9, 720p VP8), lalu file asli. Maks ~15 MB, divalidasi `ffprobe`, disimpan ke `temp/raw_<i>.webm`. Status 404 → kandidat berikutnya; 429/503 terus-menerus → berhenti (tidak membanjiri server). File asli Commons sering 4K berbitrate sangat tinggi: di run #4, 15 MB hanya berisi 0,9–2,4 s gambar.
 3. `remux_clip` menyalin stream video ke `temp/clip_<i>.mkv` (`-c copy`) sehingga durasi = data yang benar-benar terunduh. Unduhan terpotong tetap membawa header durasi penuh, jadi tanpa langkah ini titik mulai acak bisa jatuh di luar data.
-4. `make_segment` memotong `seg` detik dari titik acak klip, lalu: scale + crop 1080x1920, `fps=30`, `eq` (brightness -0.15, contrast 1.2), `vignette`, `format=yuv420p`. Klip pendek di-loop. Hasilnya diperiksa: bila lebih pendek dari `seg − 0,15 s`, segmen diulang dari awal klip; bila tetap pendek, klip dianggap gagal.
+4. `make_segment` memotong `seg` detik dari titik acak klip, lalu: scale + crop 1080x1920, `fps=30`, `eq` (brightness -0.15, contrast 1.2), `vignette`, `format=yuv420p`. Klip yang lebih pendek dari segmen diperlambat agar pas (`setpts`, maks `MAX_SLOWDOWN` = 2x), karena loop menghasilkan lompatan gambar yang kasar (klip Rain 5,9 s di run #5); hanya klip yang lebih pendek dari setengah segmen yang di-loop. Hasilnya diperiksa: bila lebih pendek dari `seg − 0,15 s`, segmen diulang dari awal klip; bila tetap pendek, klip dianggap gagal.
 5. Gagal unduh / remux / segmen → `make_fallback_segment` (warna polos `0x0d1117`) menggantikan hanya klip itu, jadi jumlah klip dan durasi tetap utuh.
 6. `crossfade_segments` merangkai semua segmen dengan filter `xfade`, transisi bergantian `fade`, `dissolve`, `fadeblack`.
 
@@ -148,7 +148,7 @@ Segment         : temp/seg_<i>.mp4                 # 1080x1920, 30 fps, tanpa au
 | Tidak ada `GCP_SERVICE_ACCOUNT_KEY` | Sheet dilewati, memakai quote bawaan di kode |
 | Tidak ada baris `READY` | Memakai quote bawaan; status tidak diubah |
 | Klip footage gagal / bukan video | Segmen itu diganti warna polos; sisanya tetap |
-| Semua klip gagal | Video berupa warna polos dengan crossfade |
+| Semua klip gagal | `RuntimeError`, run merah, video tidak dirender, baris Sheet tetap `READY` (keputusan pemilik 2026-10-08) |
 | BGM gagal diunduh | Nada sinus 110 Hz, volume rendah |
 | FFmpeg error | `check=True` melempar exception; run merah |
 | Update Sheet gagal | Exception; MP4 tetap tidak terunggah karena langkah upload berikutnya tidak jalan |

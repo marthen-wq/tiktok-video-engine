@@ -17,7 +17,7 @@ Pipeline `generator.py` (serial): ambil quote → TTS → durasi (ffprobe) → s
 5. **Subtitle ASS**, 3 kata per baris, tengah layar, font DejaVu Sans Bold. Waktu dari event `WordBoundary` edge-tts; cadangan: `SentenceBoundary`, lalu proporsional panjang kata.
 6. **Ducking nyata:** `sidechaincompress` (narasi mengendalikan musik) + `amix normalize=0`. Level = konstanta `BGM_VOLUME`, `DUCK_*`.
 7. **Background 3–4 klip + crossfade 0,8 s.** `n = clamp(ceil(total/9), 3, 4)`; panjang hasil tepat `total`.
-8. **Degradasi, bukan gagal.** Footage/BGM gagal → fallback (warna polos / nada sinus), render tetap jalan.
+8. **Degradasi, kecuali tanpa footage sama sekali.** Satu klip/BGM gagal → fallback (warna polos / nada sinus), render tetap jalan. Semua klip gagal → run gagal, baris Sheet tetap `READY`.
 9. **Rahasia hanya di GitHub Secrets.** Jangan commit kredensial.
 
 ## Kontrak penting
