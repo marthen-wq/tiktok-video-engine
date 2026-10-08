@@ -10,12 +10,11 @@ TikTok Shorts Video Generator Engine v2.0
 import os
 import sys
 import json
+import math
 import random
 import asyncio
 import subprocess
 import requests
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
 
 SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID", "1wQepTnnoZi0rO5oPKkP5Qq8dfIcwqiAPg1r9_tadLf4")
 GCP_SA_KEY = os.environ.get("GCP_SERVICE_ACCOUNT_KEY", "")
@@ -42,6 +41,8 @@ def get_sheets_service():
     if not GCP_SA_KEY:
         print("[!] GCP_SERVICE_ACCOUNT_KEY tidak ditemukan!")
         return None
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
     info = json.loads(GCP_SA_KEY)
     creds = service_account.Credentials.from_service_account_info(
         info,
@@ -133,43 +134,123 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         for c in chunks:
             f.write(f"Dialogue: 0,{sec_to_ass(c['start'])},{sec_to_ass(c['end'])},Default,,0,0,0,,{c['text']}\n")
 
-def prepare_background_video(target_duration: float, output_path: str):
-    """Mengunduh footage video asli dan memotong menjadi vertikal 9:16 (1080x1920)"""
-    print(f"[*] Menyiapkan footage video bergerak HD durasi {target_duration:.1f}s...")
-    clip_url = random.choice(CINEMATIC_VIDEO_SOURCES)
-    raw_video = os.path.join(TEMP_DIR, "raw_footage.webm")
+# Parameter sequencing multi-klip
+MIN_CLIPS = 3          # jumlah klip minimum dalam satu video
+MAX_CLIPS = 4          # jumlah klip maksimum
+SECONDS_PER_CLIP = 9   # target durasi tampil per klip (menentukan jumlah klip)
+CROSSFADE = 0.8        # durasi transisi antar klip (detik)
+TRANSITIONS = ["fade", "dissolve", "fadeblack"]  # transisi halus, dipakai bergantian
+VIDEO_FILTER = (
+    "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
+    "setsar=1,fps=30,eq=brightness=-0.15:contrast=1.2,vignette=PI/4,format=yuv420p"
+)
 
-    # Download raw footage video
+def plan_sequence(total: float):
+    """Hitung jumlah klip, durasi tiap segmen, durasi crossfade, dan offset xfade.
+
+    Panjang hasil = n*seg - (n-1)*xf = total, jadi video akhir tepat sepanjang `total`.
+    """
+    n = max(MIN_CLIPS, min(MAX_CLIPS, math.ceil(total / SECONDS_PER_CLIP)))
+    xf = min(CROSSFADE, total / (3 * n))  # untuk video sangat pendek, perkecil transisi
+    seg = (total + (n - 1) * xf) / n
+    offsets = [round(i * (seg - xf), 3) for i in range(1, n)]
+    return n, seg, xf, offsets
+
+def pick_clip_urls(n: int):
+    """Pilih n URL: tanpa pengulangan selama pool cukup, tidak pernah dua klip sama berurutan."""
+    pool = list(CINEMATIC_VIDEO_SOURCES)
+    picks = random.sample(pool, min(n, len(pool)))
+    while len(picks) < n:
+        picks.append(random.choice([u for u in pool if u != picks[-1]] or pool))
+    return picks
+
+def probe_duration(path: str) -> float:
     try:
-        r = requests.get(clip_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30, stream=True)
-        with open(raw_video, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1024*1024):
-                if chunk: f.write(chunk)
-                if os.path.getsize(raw_video) > 15 * 1024 * 1024:  # Cukup 15MB
+        out = subprocess.check_output(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            stderr=subprocess.DEVNULL).decode().strip()
+        return float(out)
+    except Exception:
+        return 0.0
+
+def download_clip(url: str, dest: str) -> bool:
+    """Unduh footage (maks ~15MB). True hanya jika hasilnya video yang bisa dibaca ffprobe."""
+    if os.path.exists(dest) and probe_duration(dest) > 0:
+        return True
+    try:
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30, stream=True)
+        r.raise_for_status()
+        size = 0
+        with open(dest, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                f.write(chunk)
+                size += len(chunk)
+                if size > 15 * 1024 * 1024:
                     break
-        print(f"[+] Berhasil mengunduh klip footage ({os.path.getsize(raw_video) // 1024} KB)")
-
-        # Konversi ke vertikal 9:16 + color grading moody
-        cmd = [
-            "ffmpeg", "-y",
-            "-stream_loop", "-1", "-i", raw_video,
-            "-t", str(target_duration + 1.5),
-            "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,eq=brightness=-0.15:contrast=1.2,vignette=PI/4",
-            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-            output_path
-        ]
-        subprocess.run(cmd, check=True)
-        return
+        ok = probe_duration(dest) > 0
+        print(f"[{'+' if ok else '!'}] Klip {os.path.basename(url)[:40]}: {size // 1024} KB, {'valid' if ok else 'tidak terbaca'}")
+        return ok
     except Exception as e:
-        print(f"[!] Gagal mengunduh klip ({e}), menggunakan visual sinematik alternatif...")
+        print(f"[!] Gagal mengunduh {url} ({e})")
+        return False
 
-    # Fallback: Animasi bergerak partikel/gradien sinematik vertikal
+def make_segment(raw: str, seg_len: float, out_path: str):
+    """Potong satu segmen vertikal 9:16 dari klip mentah, mulai dari titik acak."""
+    clip_len = probe_duration(raw)
+    cmd = ["ffmpeg", "-y"]
+    if clip_len > seg_len + 0.5:
+        cmd += ["-ss", f"{random.uniform(0, clip_len - seg_len - 0.25):.2f}"]
+    cmd += ["-stream_loop", "-1", "-i", raw, "-t", f"{seg_len:.3f}", "-an",
+            "-vf", VIDEO_FILTER, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", out_path]
+    subprocess.run(cmd, check=True, stderr=subprocess.DEVNULL)
+
+def make_fallback_segment(seg_len: float, out_path: str):
+    """Segmen cadangan jika klip gagal diunduh, agar jumlah klip dan durasi tetap utuh."""
     subprocess.run([
-        "ffmpeg", "-y",
-        "-f", "lavfi",
-        "-i", f"color=c=0x0d1117:s=1080x1920:d={target_duration+1.5}:r=30",
-        "-c:v", "libx264", output_path
-    ], check=True)
+        "ffmpeg", "-y", "-f", "lavfi",
+        "-i", f"color=c=0x0d1117:s=1080x1920:d={seg_len:.3f}:r=30",
+        "-vf", "format=yuv420p", "-c:v", "libx264", "-preset", "veryfast", out_path
+    ], check=True, stderr=subprocess.DEVNULL)
+
+def crossfade_segments(segments, seg_len: float, xf: float, offsets, output_path: str):
+    cmd = ["ffmpeg", "-y"]
+    for seg in segments:
+        cmd += ["-i", seg]
+    if len(segments) == 1:
+        graph, last = "", "0:v"
+    else:
+        parts, last = [], "0:v"
+        for i, off in enumerate(offsets, start=1):
+            tr = TRANSITIONS[(i - 1) % len(TRANSITIONS)]
+            parts.append(f"[{last}][{i}:v]xfade=transition={tr}:duration={xf:.3f}:offset={off}[v{i}]")
+            last = f"v{i}"
+        graph = ";".join(parts)
+    if graph:
+        cmd += ["-filter_complex", graph, "-map", f"[{last}]"]
+    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", output_path]
+    subprocess.run(cmd, check=True, stderr=subprocess.DEVNULL)
+
+def prepare_background_video(target_duration: float, output_path: str):
+    """Susun 3-4 klip footage berbeda (9:16, 1080x1920) dengan crossfade halus."""
+    total = target_duration + 1.5
+    n, seg_len, xf, offsets = plan_sequence(total)
+    urls = pick_clip_urls(n)
+    print(f"[*] Menyusun {n} klip x {seg_len:.1f}s (crossfade {xf:.1f}s) untuk video {total:.1f}s...")
+
+    segments = []
+    for i, url in enumerate(urls):
+        raw = os.path.join(TEMP_DIR, f"raw_{CINEMATIC_VIDEO_SOURCES.index(url)}.webm")
+        seg_path = os.path.join(TEMP_DIR, f"seg_{i}.mp4")
+        if download_clip(url, raw):
+            make_segment(raw, seg_len, seg_path)
+        else:
+            print(f"[!] Klip {i + 1} memakai visual cadangan")
+            make_fallback_segment(seg_len, seg_path)
+        segments.append(seg_path)
+
+    crossfade_segments(segments, seg_len, xf, offsets, output_path)
+    print(f"[+] Background multi-klip siap: {probe_duration(output_path):.1f}s")
 
 def prepare_bgm(output_path: str):
     """Menyiapkan musik latar instrumental piano emosional"""
