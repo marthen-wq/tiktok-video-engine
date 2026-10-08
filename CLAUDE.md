@@ -14,10 +14,10 @@ GitHub Actions (generate.yml)
 generator.py  main()
   ├── 1. fetch_ready_quote()         first READY row → quote (A), environment (B)
   ├── 2. generate_narration()        edge-tts id-ID-ArdiNeural (rate -5%, pitch -3Hz)
-  ├── 3. create_ass_subtitles()      ASS, 3 words per line, bold yellow, centered
+  ├── 3. create_ass_subtitles()      ASS, 3 words per line, bold yellow, centered, timed from TTS word events
   ├── 4. prepare_bgm()               piano ambient (fallback: 110 Hz sine drone)
   ├── 5. prepare_background_video()  3–4 different clips + crossfade (see below)
-  ├── 6. render_shorts_video()       burn subtitles, mix narration + BGM, H.264/AAC
+  ├── 6. render_shorts_video()       burn subtitles, mix narration + BGM with sidechain ducking, H.264/AAC
   └── 7. update_sheet_status()       column E reference, column F = DONE
         ↓
 Output: output/shorts_<row|motivasi>.mp4 → GitHub Artifact (7 days)
@@ -29,7 +29,7 @@ Output: output/shorts_<row|motivasi>.mp4 → GitHub Artifact (7 days)
 ## 📁 Repository Structure
 - `.github/workflows/generate.yml`: workflow (`repository_dispatch: generate-video` and `workflow_dispatch` with `quote_override`).
 - `generator.py`: the whole engine.
-- `tests/test_sequencing.py`: offline tests for sequencing (needs `ffmpeg`).
+- `tests/test_sequencing.py`, `tests/test_audio_subtitles.py`: offline tests (need `ffmpeg`).
 - `requirements.txt`: Python dependencies.
 - `PRD.md`, `ARCHITECTURE.md`, `ARCHITECTURE-ESSENTIALS.md`, `MEMORY.md`, `AGENTS.md`: project docs.
 
@@ -41,8 +41,8 @@ Output: output/shorts_<row|motivasi>.mp4 → GitHub Artifact (7 days)
 Never commit credentials.
 
 ## ✅ What is real vs. not yet (do not claim otherwise)
-- Audio "ducking" is a fixed `volume=0.18` BGM through `amix`; there is no sidechain compression.
-- Subtitles are evenly timed 3-word chunks, not synced to speech and without `\k` karaoke tags. `whisper-timestamped` is in `requirements.txt` but unused.
+- Ducking is real (`sidechaincompress` keyed by the narration, `amix normalize=0`), but the levels (`BGM_VOLUME`, `DUCK_*`) were only measured with test tones — tune by ear.
+- Subtitle timing comes from edge-tts `WordBoundary` events (fallbacks: `SentenceBoundary`, then length-proportional). It is unverified that `id-ID-ArdiNeural` emits word events; the run log says which source was used. There are no per-word `\k` highlights. `whisper-timestamped` is in `requirements.txt` but unused.
 - Sheet column B (environment) is read but does not influence footage.
 - Column E stores plain text, and `DONE` is written before the artifact upload step.
 - Footage/BGM URLs have not been verified from a GitHub runner.
@@ -51,7 +51,7 @@ Never commit credentials.
 
 **Offline tests (no network, no credentials):**
 ```bash
-python3 -m unittest discover -s tests -v    # ~50 s, needs ffmpeg + requests
+python3 -m unittest discover -s tests -v    # ~50 s, 15 tests, needs ffmpeg + requests
 ```
 
 **Local run without Sheets** (needs `pip install -r requirements.txt` or at least `edge-tts requests`, plus `ffmpeg`):
@@ -62,6 +62,6 @@ QUOTE_INPUT="Kamu tidak sedang tertinggal, kamu sedang ditempa." python3 generat
 
 **On GitHub Actions:**
 1. Smoke test without the Sheet: **Actions → Auto TikTok Shorts Video Generator → Run workflow**, fill `quote_override` with a ~30 s text (about 70–80 words).
-2. In the run log check: `Menyusun 4 klip`, one `[+] Klip ... valid` line per clip (a `[!] Gagal mengunduh` line means that clip fell back to a flat colour), and `Background multi-klip siap`.
-3. Download `tiktok-shorts-video` from Artifacts and watch it: 3–4 scene changes, smooth fades, gold subtitles centered, narration louder than music.
+2. In the run log check: `Sinkronisasi subtitle: WordBoundary (N kata)` (a `[!] Tidak ada event batas` line means the fallback was used), `Menyusun 4 klip`, one `[+] Klip ... valid` line per clip (a `[!] Gagal mengunduh` line means that clip fell back to a flat colour), and `Background multi-klip siap`.
+3. Download `tiktok-shorts-video` from Artifacts and watch it: 3–4 scene changes, smooth fades, gold subtitles centered, narration clearly louder than music, music rising in pauses and dipping while the narrator speaks, subtitles appearing as each word group is spoken.
 4. Full test: set one Sheet row to `READY`, run with `quote_override` empty, confirm F becomes `DONE`.

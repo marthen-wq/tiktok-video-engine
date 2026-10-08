@@ -78,37 +78,97 @@ def update_sheet_status(row_idx: int, video_url: str):
     ).execute()
     print(f"[+] Status baris {row_idx} berhasil diupdate ke 'DONE'!")
 
+TICKS_PER_SEC = 10_000_000  # edge-tts melaporkan offset/durasi dalam satuan 100 ns
+
 async def generate_narration(text: str, output_path: str):
+    """Simpan audio narasi dan kembalikan event batas kata/kalimat (detik) untuk sinkronisasi subtitle."""
     import edge_tts
     print(f"[*] Menghasilkan audio TTS untuk narasi...")
-    communicate = edge_tts.Communicate(
-        text=text,
-        voice="id-ID-ArdiNeural",
-        rate="-5%",
-        pitch="-3Hz"
-    )
-    await communicate.save(output_path)
+    kwargs = dict(text=text, voice="id-ID-ArdiNeural", rate="-5%", pitch="-3Hz")
+    try:
+        communicate = edge_tts.Communicate(boundary="WordBoundary", **kwargs)
+    except TypeError:  # edge-tts lama tanpa parameter boundary
+        communicate = edge_tts.Communicate(**kwargs)
 
-def create_ass_subtitles(text: str, total_duration: float, ass_path: str):
-    """Membuat subtitle karaoke bergaya profesional (muncul per 3-4 kata di tengah layar)"""
-    print("[*] Merancang subtitle dinamis karaoke...")
-    words = text.strip().split()
-    total_words = len(words)
-    if total_words == 0:
+    events = []
+    with open(output_path, "wb") as f:
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                f.write(chunk["data"])
+            elif chunk["type"] in ("WordBoundary", "SentenceBoundary"):
+                start = chunk["offset"] / TICKS_PER_SEC
+                events.append({
+                    "kind": chunk["type"],
+                    "text": chunk["text"],
+                    "start": start,
+                    "end": start + chunk["duration"] / TICKS_PER_SEC,
+                })
+    return events
+
+PAUSE_WEIGHT = {",": 2, ";": 2, ":": 2, ".": 4, "!": 4, "?": 4}  # jeda setelah tanda baca (setara karakter)
+MAX_SUBTITLE_GAP = 0.35  # jeda ucapan lebih pendek dari ini tidak mengosongkan layar
+
+def spread_words(words, t0: float, t1: float):
+    """Bagi rentang [t0, t1] ke kata-kata sebanding panjangnya (+ jeda setelah tanda baca)."""
+    if not words:
+        return []
+    weights = [max(1, len(w.strip(",.;:!?\"'"))) + PAUSE_WEIGHT.get(w[-1], 0) for w in words]
+    total, span = float(sum(weights)), max(t1 - t0, 0.0)
+    out, cur = [], t0
+    for w, wt in zip(words, weights):
+        nxt = cur + span * wt / total
+        out.append((w, cur, nxt))
+        cur = nxt
+    return out
+
+def build_word_timings(text: str, events, duration: float):
+    """Hasilkan [(kata, mulai, selesai)] dengan sumber waktu terbaik yang tersedia.
+
+    1. Event WordBoundary dari TTS (waktu ucapan sebenarnya).
+    2. Event SentenceBoundary: kata dibagi proporsional di dalam tiap kalimat.
+    3. Tanpa event: seluruh durasi audio dibagi proporsional panjang kata.
+    """
+    words = text.split()
+    if not words:
+        return []
+    word_ev = [e for e in events if e["kind"] == "WordBoundary" and e["text"].strip()]
+    if word_ev:
+        print(f"[*] Sinkronisasi subtitle: WordBoundary ({len(word_ev)} kata)")
+        if len(word_ev) == len(words):  # pertahankan tanda baca dari teks asli
+            return [(w, e["start"], e["end"]) for w, e in zip(words, word_ev)]
+        return [(e["text"].strip(), e["start"], e["end"]) for e in word_ev]
+    sent_ev = [e for e in events if e["kind"] == "SentenceBoundary" and e["text"].strip()]
+    if sent_ev and sum(len(e["text"].split()) for e in sent_ev) == len(words):
+        print(f"[*] Sinkronisasi subtitle: SentenceBoundary ({len(sent_ev)} kalimat)")
+        out, i = [], 0
+        for e in sent_ev:
+            n = len(e["text"].split())
+            out += spread_words(words[i:i + n], e["start"], e["end"])
+            i += n
+        return out
+    print("[!] Tidak ada event batas dari TTS, subtitle dibagi proporsional panjang kata")
+    return spread_words(words, 0.0, duration)
+
+def create_ass_subtitles(text: str, total_duration: float, ass_path: str, events=None):
+    """Membuat subtitle profesional (3 kata per tampilan di tengah layar), tersinkron dengan ucapan."""
+    print("[*] Merancang subtitle dinamis...")
+    timings = build_word_timings(text, events or [], total_duration)
+    if not timings:
         return
 
-    time_per_word = (total_duration - 1.0) / total_words
     chunk_size = 3
     chunks = []
-    for i in range(0, total_words, chunk_size):
-        chunk_words = words[i:i + chunk_size]
-        start_time = i * time_per_word
-        end_time = min(total_duration, (i + len(chunk_words)) * time_per_word)
-        chunks.append({
-            "start": start_time,
-            "end": end_time,
-            "text": " ".join(chunk_words).upper()
-        })
+    for i in range(0, len(timings), chunk_size):
+        group = timings[i:i + chunk_size]
+        shown = " ".join(w for w, _, _ in group).replace("{", "(").replace("}", ")")  # cegah tag override ASS
+        chunks.append({"start": group[0][1], "end": group[-1][2], "text": shown.upper()})
+    for cur, nxt in zip(chunks, chunks[1:] + [None]):
+        if nxt is None:
+            cur["end"] += 0.3
+        elif nxt["start"] - cur["end"] <= MAX_SUBTITLE_GAP:
+            cur["end"] = nxt["start"]  # sambung langsung ke tampilan berikutnya
+        else:
+            cur["end"] = min(cur["end"] + 0.15, nxt["start"])  # jeda panjang: layar boleh kosong
 
     def sec_to_ass(s):
         hrs = int(s // 3600)
@@ -274,21 +334,36 @@ def prepare_bgm(output_path: str):
         output_path
     ], check=True)
 
-def render_shorts_video(bg_video: str, narration_audio: str, bgm_audio: str, ass_subtitles: str, final_output: str, duration: float):
-    print("[*] Merender video final (Visual Bergerak + Audio Narasi + BGM Ducking + Karaoke Subtitle)...")
-    
-    # Filter Subtitle ASS + Audio mixing ducking
-    filter_complex = (
-        f"[0:v]subtitles={ass_subtitles}[v];"
-        f"[2:a]volume=0.18[bgm];"
-        f"[1:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[a]"
+# Parameter ducking: musik turun saat narator bicara, naik lagi saat jeda
+BGM_VOLUME = 0.20        # level musik saat narator diam
+DUCK_THRESHOLD = 0.02    # ambang (amplitudo linear) narasi yang memicu penurunan musik
+DUCK_RATIO = 8
+DUCK_ATTACK_MS = 20
+DUCK_RELEASE_MS = 600
+
+def build_audio_filter(narr_idx: int = 1, bgm_idx: int = 2, out_label: str = "a") -> str:
+    """Narasi tetap penuh; musik dikompres sidechain oleh narasi lalu dicampur tanpa normalisasi."""
+    # narasi: dual-mono (upmix biasa menurunkan 3 dB per kanal); musik: stereo 44,1 kHz
+    narr_fmt = "aformat=sample_rates=44100:channel_layouts=mono,pan=stereo|c0=c0|c1=c0"
+    bgm_fmt = "aformat=sample_rates=44100:channel_layouts=stereo"
+    return (
+        f"[{narr_idx}:a]{narr_fmt},asplit=2[narr][sc];"
+        f"[{bgm_idx}:a]{bgm_fmt},volume={BGM_VOLUME}[bgm];"
+        f"[bgm][sc]sidechaincompress=threshold={DUCK_THRESHOLD}:ratio={DUCK_RATIO}"
+        f":attack={DUCK_ATTACK_MS}:release={DUCK_RELEASE_MS}[ducked];"
+        f"[narr][ducked]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[{out_label}]"
     )
+
+def render_shorts_video(bg_video: str, narration_audio: str, bgm_audio: str, ass_subtitles: str, final_output: str, duration: float):
+    print("[*] Merender video final (Visual Bergerak + Audio Narasi + BGM Ducking + Subtitle)...")
+
+    filter_complex = f"[0:v]subtitles={ass_subtitles}[v];" + build_audio_filter()
 
     cmd = [
         "ffmpeg", "-y",
         "-i", bg_video,
         "-i", narration_audio,
-        "-i", bgm_audio,
+        "-stream_loop", "-1", "-i", bgm_audio,  # musik diulang bila lebih pendek dari narasi
         "-filter_complex", filter_complex,
         "-map", "[v]", "-map", "[a]",
         "-t", str(duration + 1.2),
@@ -321,12 +396,12 @@ def main():
     final_video = os.path.join(OUTPUT_DIR, video_name)
 
     # 1. Generate Audio Narasi
-    asyncio.run(generate_narration(quote, audio_path))
+    events = asyncio.run(generate_narration(quote, audio_path))
     cmd_dur = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", audio_path]
     duration = float(subprocess.check_output(cmd_dur).decode().strip())
 
     # 2. Rancang Subtitle Dinamis (ASS)
-    create_ass_subtitles(quote, duration, ass_path)
+    create_ass_subtitles(quote, duration, ass_path, events)
 
     # 3. Video Footage Bergerak Asli & Musik Latar
     prepare_bgm(bgm_path)

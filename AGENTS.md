@@ -31,4 +31,4 @@ QUOTE_INPUT="Teks uji" python3 generator.py        # local run, skips Google She
 - Change the Sheet column contract (A quote, B environment, E result, F status) without updating `ARCHITECTURE.md` section 4.1.
 
 ## Known open work (see PRD roadmap)
-Real ducking (`sidechaincompress`), speech-synced subtitles, footage by Sheet column B, clickable artifact link and `DONE` after upload, verified footage/BGM sources, larger footage pool (currently 3 URLs for up to 4 clips).
+Tune ducking levels by ear, optional per-word `\k` highlight, footage by Sheet column B, clickable artifact link and `DONE` after upload, verified footage/BGM sources, larger footage pool (currently 3 URLs for up to 4 clips).

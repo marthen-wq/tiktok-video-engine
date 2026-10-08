@@ -40,13 +40,13 @@ Jalur alternatif: `quote_override` pada `workflow_dispatch` melewati Sheet sama 
 |---|---|---|---|
 | F1 | Baca antrean dari Sheet, ambil baris `READY` pertama | P0 | Ada |
 | F2 | Voiceover Indonesia via edge-tts `id-ID-ArdiNeural` (rate -5%, pitch -3Hz) | P0 | Ada |
-| F3 | Subtitle ASS, 3 kata per baris, huruf kapital tebal kuning/emas, tengah layar | P0 | Ada (timing merata, belum sinkron ucapan) |
+| F3 | Subtitle ASS, 3 kata per baris, huruf kapital tebal kuning/emas, tengah layar | P0 | Ada (tersinkron ucapan, lihat F8) |
 | F4 | Background 3–4 klip berbeda dengan crossfade halus, 1080x1920, 30 fps | P0 | Ada (v2.1), diuji dengan klip sintetis |
-| F5 | Musik latar piano ambient dicampur di bawah narasi | P0 | Ada (volume tetap, belum ducking dinamis) |
+| F5 | Musik latar piano ambient dicampur di bawah narasi | P0 | Ada (dengan ducking, lihat F9) |
 | F6 | Simpan MP4 sebagai Artifact, set status `DONE` | P0 | Ada (kolom E hanya teks, bukan tautan) |
 | F7 | Fallback otomatis saat footage / BGM gagal diunduh | P1 | Ada |
-| F8 | Subtitle tersinkron dengan ucapan sebenarnya | P1 | Belum |
-| F9 | Ducking sungguhan (musik turun saat narator bicara) | P1 | Belum |
+| F8 | Subtitle tersinkron dengan ucapan sebenarnya | P1 | Ada: event WordBoundary edge-tts, cadangan SentenceBoundary lalu proporsional panjang kata. Belum teruji dengan suara asli |
+| F9 | Ducking sungguhan (musik turun saat narator bicara) | P1 | Ada: `sidechaincompress`, turun ~19 dB pada nada uji. Nilai akhir perlu disetel dengan telinga |
 | F10 | Footage mengikuti kolom B (tema) | P2 | Belum (kolom dibaca tapi tidak dipakai) |
 | F11 | Tulis tautan Artifact yang bisa diklik ke Sheet | P2 | Belum |
 
@@ -73,7 +73,7 @@ Jalur alternatif: `quote_override` pada `workflow_dispatch` melewati Sheet sama 
 | Lisensi klip Wikimedia beragam (atribusi / share-alike) | Masalah klaim hak cipta | Audit lisensi tiap klip sebelum monetisasi |
 | URL BGM Pixabay bersifat CDN sementara | BGM jatuh ke nada sinus | Simpan BGM berlisensi jelas di `assets/` |
 | edge-tts adalah layanan tidak resmi | Bisa berubah / dibatasi | Pin versi; siapkan TTS cadangan |
-| Dependensi berat di `requirements.txt` (`whisper-timestamped` menarik PyTorch) | Install lambat, mendekati batas 15 menit | Hapus dependensi yang tidak dipakai atau pakai saat F8 dikerjakan |
+| Dependensi berat di `requirements.txt` (`whisper-timestamped` menarik PyTorch) | Install lambat, mendekati batas 15 menit | Hapus dependensi yang tidak dipakai (F8 kini memakai edge-tts, bukan Whisper) |
 | Status `DONE` ditulis sebelum langkah upload artifact selesai | Baris tercatat selesai padahal artifact gagal | Pindahkan update Sheet ke langkah setelah upload |
 
 Asumsi: Sheet bernama `Sheet1`, kolom A–F seperti di ARCHITECTURE.md, dan service account sudah diberi akses edit.
@@ -81,5 +81,5 @@ Asumsi: Sheet bernama `Sheet1`, kolom A–F seperti di ARCHITECTURE.md, dan serv
 ## 9. Roadmap
 
 - **P0 — Validasi:** jalankan workflow nyata, periksa log unduhan footage/BGM, tonton hasilnya.
-- **P1 — Kualitas:** ducking sungguhan (`sidechaincompress`), subtitle sinkron (WordBoundary edge-tts atau Whisper).
+- **P1 — Kualitas:** setel level ducking dengan telinga, highlight kata per kata (`\k`) bila diinginkan.
 - **P2 — Otomasi:** footage sesuai tema, tautan Artifact di Sheet, penjadwalan harian.

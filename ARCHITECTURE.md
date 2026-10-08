@@ -34,11 +34,11 @@ Eksekusi serial dalam satu proses Python. Tidak ada server, antrean pesan, atau 
 |---|---|---|
 | Pemicu | `.github/workflows/generate.yml` | `workflow_dispatch` (input `quote_override`) dan `repository_dispatch` (`generate-video`); siapkan Python, FFmpeg, font; jalankan generator; unggah artifact |
 | Antrean | `fetch_ready_quote`, `update_sheet_status` | Baca `Sheet1!A1:F50`, ambil baris `READY` pertama; tulis `E:F` |
-| Suara | `generate_narration` | edge-tts `id-ID-ArdiNeural`, rate `-5%`, pitch `-3Hz` |
-| Subtitle | `create_ass_subtitles` | Bagi kata per 3, durasi merata, tulis file ASS |
+| Suara | `generate_narration` | edge-tts `id-ID-ArdiNeural`, rate `-5%`, pitch `-3Hz`, `boundary="WordBoundary"`; mengembalikan event waktu kata (detik) |
+| Subtitle | `build_word_timings`, `spread_words`, `create_ass_subtitles` | Waktu kata dari event TTS, bagi per 3 kata, tulis file ASS |
 | Visual | `plan_sequence`, `pick_clip_urls`, `download_clip`, `make_segment`, `make_fallback_segment`, `crossfade_segments`, `prepare_background_video` | Susun 3–4 klip menjadi satu background 9:16 |
 | Audio latar | `prepare_bgm` | Unduh piano ambient; fallback nada sinus 110 Hz |
-| Render | `render_shorts_video` | Bakar subtitle ke video, mix narasi + BGM, encode H.264/AAC |
+| Render | `build_audio_filter`, `render_shorts_video` | Bakar subtitle, ducking sidechain narasi → musik, encode H.264/AAC |
 | Tes | `tests/test_sequencing.py` | Uji logika sequencing dan render dengan klip sintetis |
 
 ## 3. Sequencing multi-klip (v2.1)
@@ -67,6 +67,17 @@ Langkah per video:
 
 Hasil uji (`tests/test_sequencing.py`): 4 klip berwarna berbeda untuk 30 detik, warna dominan berganti di tiap segmen, durasi 31,5 s, resolusi 1080x1920. Yang belum teruji: unduhan nyata dari Wikimedia (diblokir di sandbox pengembangan).
 
+### 3b. Sinkronisasi subtitle dan ducking audio
+
+**Subtitle.** `generate_narration` meminta `boundary="WordBoundary"` ke edge-tts dan menampung event (offset/durasi dalam tick 100 ns, dikonversi ke detik). `build_word_timings` memilih sumber waktu terbaik:
+1. `WordBoundary`: waktu ucapan sebenarnya. Jumlah event sama dengan jumlah kata → kata asli (dengan tanda baca) dipakai.
+2. `SentenceBoundary`: kata dibagi proporsional panjang karakter di dalam tiap kalimat, batas kalimat tepat.
+3. Tanpa event: seluruh durasi audio dibagi proporsional panjang kata (+ bobot jeda setelah tanda baca).
+
+Tiap tampilan 3 kata muncul saat kata pertamanya diucapkan. Jeda ucapan ≤ 0,35 s disambung ke tampilan berikutnya; jeda lebih panjang mengosongkan layar. Tanda `{` `}` dari quote diganti agar tidak menjadi tag ASS.
+
+**Ducking.** `build_audio_filter`: narasi dijadikan dual-mono stereo lalu dipecah (`asplit`) menjadi jalur campuran dan jalur sidechain; musik (`volume=BGM_VOLUME`) dikompres oleh jalur sidechain (`sidechaincompress`, threshold 0,02, ratio 8, attack 20 ms, release 600 ms), lalu keduanya dicampur dengan `amix=normalize=0` (narasi tidak dibagi dua; butuh FFmpeg ≥ 4.4, runner `ubuntu-latest` memakai 6.1). Musik di-loop bila lebih pendek dari narasi. Pada nada uji musik turun ~19 dB saat narasi aktif dan level narasi tidak berubah.
+
 ## 4. Model data
 
 ### 4.1 Google Sheet `Sheet1` (antrean)
@@ -86,6 +97,8 @@ Baris 1 adalah header. Rentang baca `A1:F50` sehingga hanya 49 baris data pertam
 ```
 Quote           : str                              # kalimat utuh
 Narration       : file mp3 + duration: float       # duration dari ffprobe
+BoundaryEvent   : {kind: WordBoundary|SentenceBoundary, text: str, start: float, end: float}  # detik
+WordTiming      : (word: str, start: float, end: float)
 SubtitleChunk   : {start: float, end: float, text: str}   # 3 kata, huruf kapital
 SequencePlan    : (n: int, seg: float, xf: float, offsets: list[float])
 ClipSource      : str                              # URL di CINEMATIC_VIDEO_SOURCES
@@ -154,11 +167,11 @@ Segment         : temp/seg_<i>.mp4                 # 1080x1920, 30 fps, tanpa au
 
 ## 9. Celah yang diketahui
 
-1. Ducking tidak nyata: `amix` dengan BGM tetap `volume=0.18`; tidak ada `sidechaincompress`.
-2. Subtitle bukan karaoke sejati: tidak ada tag `\k`, dan timing = `(durasi − 1)/jumlah_kata` merata, tidak sinkron ucapan.
+1. Level ducking (`BGM_VOLUME`, `DUCK_*`) baru diukur dengan nada uji, belum didengar dengan musik dan suara asli.
+2. Subtitle tersinkron per tampilan 3 kata; belum ada highlight kata per kata (`\k`). Apakah `id-ID-ArdiNeural` mengirim event `WordBoundary` belum terverifikasi; bila tidak, cadangan otomatis dipakai dan tercatat di log.
 3. Kolom B (tema) dibaca tetapi tidak memengaruhi pemilihan footage.
 4. Kolom E berisi teks, bukan tautan; `DONE` ditulis sebelum artifact diunggah.
-5. BGM tidak di-loop bila lebih pendek dari narasi.
+5. (selesai) BGM kini di-loop dengan `-stream_loop -1`.
 6. URL footage dan BGM belum terverifikasi dari runner; User-Agent `Mozilla/5.0` tidak sesuai kebijakan Wikimedia.
 7. Pool footage hanya 3 URL sementara video bisa memakai 4 klip.
 8. Secret `OMNIROUTE_*` dan dependensi berat belum dipakai.
