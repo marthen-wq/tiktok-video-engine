@@ -23,6 +23,8 @@ QUOTE_INPUT="Teks uji" python3 generator.py        # local run, skips Google She
 5. **Subprocess safety.** Call `ffmpeg`/`ffprobe` with argument lists, never `shell=True`; quote text comes from the Sheet and is untrusted.
 6. **Style.** Match the file: Indonesian log messages and comments, `[*]` progress, `[+]` success, `[!]` warning. Keep `generator.py` importable without Google packages (imports live inside `get_sheets_service`).
 7. **Docs stay true.** When behaviour changes, update `ARCHITECTURE.md` (and the Essentials summary if a critical decision changed), the "real vs. not yet" list in `CLAUDE.md`, and add a dated entry to `MEMORY.md`.
+9. **No paid services.** Never add or propose a paid API/service unless the owner explicitly says they want to pay. Prefer free, keyless sources.
+10. **Footage follows the narration.** Do not offer alternative themes; footage must match what is being said.
 8. **Git.** Work on the branch you were given; do not push to `main` or open a PR unless asked. Commit messages: imperative, one concern per commit.
 
 ## Do not

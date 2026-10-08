@@ -21,6 +21,9 @@ Catatan berumur panjang untuk manusia dan agen AI. Tambahkan entri baru di bagia
 | 2026-10-08 | Klip lebih pendek dari segmen diperlambat (maks 2x), bukan di-loop | Loop klip Rain dinilai pemilik "sangat kasar" |
 | 2026-10-08 | Semua footage gagal → run gagal (bukan video polos) | Keputusan pemilik; baris Sheet tetap READY untuk dicoba lagi |
 | 2026-10-08 | Pexels tidak bisa dipakai saat ini | Pexels: "New API key issuance is currently paused" |
+| 2026-10-08 | **Tidak ada layanan berbayar** kecuali pemilik secara eksplisit menyatakan mau membayar | Aturan pemilik |
+| 2026-10-08 | Footage dipilih sesuai isi narasi: kata yang diucapkan selama segmen tampil → `SCENE_KEYWORDS` → pencarian Wikimedia Commons (gratis, tanpa key) | Perintah pemilik: tema video harus sesuai isi narasi |
+| 2026-10-08 | Google Vids tidak dipakai | Tidak ada API publik; service account tidak bisa membuat video di Vids |
 | sebelumnya | Render serverless via GitHub Actions | Tanpa beban server fisik |
 | sebelumnya | Suara `id-ID-ArdiNeural`, subtitle ASS 3 kata, BGM piano ambient | Gaya narator berwibawa, emas di tengah layar |
 
@@ -46,7 +49,7 @@ Catatan berumur panjang untuk manusia dan agen AI. Tambahkan entri baru di bagia
 
 ## Pertanyaan terbuka
 
-1. Sumber footage jangka panjang: Pexels tidak tersedia (penerbitan API key dihentikan sementara). Kandidat: klip yang dibuat Google Veo (Vertex AI) oleh service account proyek, disimpan sebagai pustaka klip.
+1. Kualitas hasil pencarian Commons per adegan perlu dinilai pemilik dari video nyata.
 2. Lisensi klip dan BGM cukup untuk monetisasi?
 3. Apa fungsi kolom C dan D di Sheet?
 4. Perlu penjadwalan harian otomatis (cron)?

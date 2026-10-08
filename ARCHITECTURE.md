@@ -68,6 +68,16 @@ Langkah per video:
 
 Hasil uji (`tests/test_sequencing.py`): 4 klip berwarna berbeda untuk 30 detik, warna dominan berganti di tiap segmen, durasi 31,5 s, resolusi 1080x1920. Di runner (run #2) unduhan Wikimedia berhasil tetapi background hanya 10,7 s dari 33,9 s; langkah 3, validasi di langkah 4, dan `extend_to_duration` (tahan frame terakhir bila rangkaian akhir masih pendek) ditambahkan untuk itu. Tes regresi ada di `ShortSegmentRegressionTest`.
 
+### 3a. Footage sesuai isi narasi
+
+`main` menghitung `timings = build_word_timings(...)` dan meneruskannya ke `prepare_background_video`. `plan_clip_sources`:
+1. `segment_texts`: kata yang diucapkan selama tiap segmen tampil (rentang `[i·(seg−xf), i·(seg−xf)+seg)`).
+2. `scenes_in_text`: akar kata Indonesia (boleh berawalan me-/ber-/di-/…, hanya di awal kata) → adegan visual dari `SCENE_KEYWORDS` (mis. ditempa → blacksmith forging, pagi → sunrise, langkah → walking, panggung → stage lights).
+3. `search_commons_videos`: Wikimedia Commons search API (`filetype:video`, gratis, tanpa key, `USER_AGENT` deskriptif), hanya `mediatype=VIDEO` dengan lebar ≥ 640, satu dipilih acak dari 4 teratas.
+4. Urutan cadangan: adegan lain di segmen itu → adegan dari bagian lain narasi → `CINEMATIC_VIDEO_SOURCES`. Tidak ada URL yang dipakai dua kali; tiap adegan dicari sekali.
+
+Nama file sementara memakai hash URL (`raw_<md5>.webm`). Kualitas hasil pencarian bergantung pada isi Commons dan belum dinilai di video nyata.
+
 ### 3b. Sinkronisasi subtitle dan ducking audio
 
 **Subtitle.** `generate_narration` meminta `boundary="WordBoundary"` ke edge-tts dan menampung event (offset/durasi dalam tick 100 ns, dikonversi ke detik). `build_word_timings` memilih sumber waktu terbaik:
@@ -170,7 +180,7 @@ Segment         : temp/seg_<i>.mp4                 # 1080x1920, 30 fps, tanpa au
 
 1. Level ducking (`BGM_VOLUME`, `DUCK_*`) baru diukur dengan nada uji, belum didengar dengan musik dan suara asli.
 2. Subtitle tersinkron per tampilan 3 kata; belum ada highlight kata per kata (`\k`). `id-ID-ArdiNeural` terbukti mengirim `WordBoundary` di runner.
-3. Kolom B (tema) dibaca tetapi tidak memengaruhi pemilihan footage.
+3. Kolom B (tema) dibaca tetapi tidak dipakai; footage kini mengikuti isi narasi (bagian 3a).
 4. Kolom E berisi teks, bukan tautan; `DONE` ditulis sebelum artifact diunggah.
 5. (selesai) BGM kini di-loop dengan `-stream_loop -1`.
 6. Wikimedia membatasi unduhan dari runner: run #2 berhasil, run #3 mendapat 429 untuk semua klip dengan User-Agent `Mozilla/5.0`. Kini memakai `USER_AGENT` deskriptif (URL repo sebagai kontak), retry hingga `DOWNLOAD_ATTEMPTS` kali sesuai `Retry-After`, dan URL yang gagal tidak dicoba ulang dalam run yang sama. Bila batas IP tetap kena, run tetap hijau tetapi background polos; sumber footage berlisensi dengan API key (mis. Pexels) adalah jalan keluar jangka panjang.
