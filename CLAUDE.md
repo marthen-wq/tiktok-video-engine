@@ -1,41 +1,67 @@
 # TikTok Shorts Video Engine 🎬 (Architecture & Development Guide)
 
-This repository automates the production of high-converting, professional TikTok / YouTube Shorts motivational videos using **GitHub Actions (Serverless Rendering)**, **Google Sheets**, and **Edge-TTS / Whisper AI**.
+Automates motivational TikTok / YouTube Shorts videos (1080x1920) using **GitHub Actions (serverless rendering)**, **Google Sheets** as the queue, **edge-tts** for voiceover and **FFmpeg** for compositing.
+
+Read order for new contributors: this file → `ARCHITECTURE-ESSENTIALS.md` → `ARCHITECTURE.md` (full) → `PRD.md` (scope, roadmap) → `MEMORY.md` (decisions, verified facts). Agent rules: `AGENTS.md`.
 
 ## 🏗️ Architecture Overview
 
 ```
-Google Sheets (Queue: status = READY)
+Google Sheets (Queue: column F status = READY)
         ↓
-GitHub Actions (Workflow: generate.yml)
+GitHub Actions (generate.yml)
         ↓
-generator.py
-  ├── 1. Fetch quote & environment from Google Sheets
-  ├── 2. Generate Voiceover TTS via edge-tts (id-ID-ArdiNeural, deep stoic pacing)
-  ├── 3. Dynamic Karaoke Subtitles via ASS format (word/phrase-by-phrase centered, bold yellow typography)
-  ├── 4. Stock Footage Download (HD vertical 9:16 clips from Wikimedia Commons / direct streams)
-  ├── 5. Background Music (Piano ambient with automatic audio ducking)
-  ├── 6. FFmpeg compositing & rendering
+generator.py  main()
+  ├── 1. fetch_ready_quote()         first READY row → quote (A), environment (B)
+  ├── 2. generate_narration()        edge-tts id-ID-ArdiNeural (rate -5%, pitch -3Hz)
+  ├── 3. create_ass_subtitles()      ASS, 3 words per line, bold yellow, centered
+  ├── 4. prepare_bgm()               piano ambient (fallback: 110 Hz sine drone)
+  ├── 5. prepare_background_video()  3–4 different clips + crossfade (see below)
+  ├── 6. render_shorts_video()       burn subtitles, mix narration + BGM, H.264/AAC
+  └── 7. update_sheet_status()       column E reference, column F = DONE
         ↓
-Output: MP4 Video (1080x1920) stored in GitHub Artifacts
-        ↓
-Update Google Sheets: status = DONE, video_url = GitHub Artifact link
+Output: output/shorts_<row|motivasi>.mp4 → GitHub Artifact (7 days)
 ```
 
+### Multi-clip sequencing (v2.1)
+`plan_sequence(total)`: `n = clamp(ceil(total/9), 3, 4)` clips, crossfade `min(0.8, total/(3n))`, output length equals `total` exactly. Clips are chosen by `pick_clip_urls` (no two identical clips in a row), cut from a random start by `make_segment`, failed downloads become a flat-colour segment (`make_fallback_segment`), and `crossfade_segments` chains them with `xfade` (fade → dissolve → fadeblack). A 30 s narration gives 4 clips of ~8.5 s.
+
 ## 📁 Repository Structure
-- `.github/workflows/generate.yml`: Workflow trigger (`repository_dispatch` and `workflow_dispatch`).
-- `generator.py`: Core video generation engine.
-- `requirements.txt`: Python dependencies (`edge-tts`, `whisper-timestamped`, `google-api-python-client`, etc.).
-- `README.md`: Overview documentation.
+- `.github/workflows/generate.yml`: workflow (`repository_dispatch: generate-video` and `workflow_dispatch` with `quote_override`).
+- `generator.py`: the whole engine.
+- `tests/test_sequencing.py`: offline tests for sequencing (needs `ffmpeg`).
+- `requirements.txt`: Python dependencies.
+- `PRD.md`, `ARCHITECTURE.md`, `ARCHITECTURE-ESSENTIALS.md`, `MEMORY.md`, `AGENTS.md`: project docs.
 
 ## 🔐 Required Secrets (Settings → Secrets and variables → Actions)
-- `SPREADSHEET_ID`: Target Google Sheets document ID (`1wQepTnnoZi0rO5oPKkP5Qq8dfIcwqiAPg1r9_tadLf4`).
-- `GCP_SERVICE_ACCOUNT_KEY`: Service account JSON credential with Google Sheets API access.
-- `OMNIROUTE_URL`: LLM gateway endpoint for script/hook generation.
-- `OMNIROUTE_KEY`: LLM gateway authorization key.
+- `SPREADSHEET_ID`: Google Sheet ID (`1wQepTnnoZi0rO5oPKkP5Qq8dfIcwqiAPg1r9_tadLf4`).
+- `GCP_SERVICE_ACCOUNT_KEY`: service account JSON; the Sheet must be shared with its email as Editor.
+- `OMNIROUTE_URL`, `OMNIROUTE_KEY`: LLM gateway. Passed to the job but **not used by the code yet**.
+
+Never commit credentials.
+
+## ✅ What is real vs. not yet (do not claim otherwise)
+- Audio "ducking" is a fixed `volume=0.18` BGM through `amix`; there is no sidechain compression.
+- Subtitles are evenly timed 3-word chunks, not synced to speech and without `\k` karaoke tags. `whisper-timestamped` is in `requirements.txt` but unused.
+- Sheet column B (environment) is read but does not influence footage.
+- Column E stores plain text, and `DONE` is written before the artifact upload step.
+- Footage/BGM URLs have not been verified from a GitHub runner.
 
 ## 🚀 How to Run & Test
-1. Set a row in Google Sheets with `status = READY`.
-2. Trigger the GitHub Action manually:
-   - Go to **Actions** → **Auto TikTok Shorts Video Generator** → **Run workflow**.
-3. Download the finished MP4 video from the **Artifacts** section at the bottom of the run summary.
+
+**Offline tests (no network, no credentials):**
+```bash
+python3 -m unittest discover -s tests -v    # ~50 s, needs ffmpeg + requests
+```
+
+**Local run without Sheets** (needs `pip install -r requirements.txt` or at least `edge-tts requests`, plus `ffmpeg`):
+```bash
+QUOTE_INPUT="Kamu tidak sedang tertinggal, kamu sedang ditempa." python3 generator.py
+# result: output/shorts_motivasi.mp4
+```
+
+**On GitHub Actions:**
+1. Smoke test without the Sheet: **Actions → Auto TikTok Shorts Video Generator → Run workflow**, fill `quote_override` with a ~30 s text (about 70–80 words).
+2. In the run log check: `Menyusun 4 klip`, one `[+] Klip ... valid` line per clip (a `[!] Gagal mengunduh` line means that clip fell back to a flat colour), and `Background multi-klip siap`.
+3. Download `tiktok-shorts-video` from Artifacts and watch it: 3–4 scene changes, smooth fades, gold subtitles centered, narration louder than music.
+4. Full test: set one Sheet row to `READY`, run with `quote_override` empty, confirm F becomes `DONE`.
