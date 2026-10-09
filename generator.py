@@ -96,7 +96,7 @@ STYLES = {
     "dark_stoic": {
         "voice": "Algenib",
         "edge_voice": "en-US-ChristopherNeural",
-        "tts_style": "low, weary and intense, speaking slowly, building to quiet unshakable resolve",
+        "tts_style": "low, weary and intense at a measured, natural pace, building to quiet unshakable resolve",
         "grade": "hue=s=0,eq=contrast=1.35:brightness=-0.05,vignette=PI/4",
         "transitions": ["fade", "fadeblack"],
         "xfade": 0.6,
@@ -107,7 +107,7 @@ STYLES = {
     "soft_healing": {
         "voice": "Sulafat",
         "edge_voice": "en-US-AvaNeural",
-        "tts_style": "warm, gentle and intimate, speaking slowly like comforting a close friend late at night",
+        "tts_style": "warm, gentle and intimate, like comforting a close friend late at night",
         "grade": "eq=contrast=0.95:saturation=1.1:brightness=0.02,"
                  "colorbalance=rs=0.08:bs=-0.08:rm=0.05:bm=-0.05,vignette=PI/5",
         "transitions": ["dissolve", "fade"],
@@ -351,13 +351,18 @@ def probe_duration(path: str) -> float:
 MAX_PAUSE = 1.2  # detik; Gemini memberi jeda 2-4 s untuk tag jeda (hening 42% di smoke run, referensi 21-25%)
 
 
-def cap_pauses(wav: str, max_pause: float = MAX_PAUSE) -> float:
-    """Potong bagian tengah setiap hening yang lebih panjang dari max_pause. Kembalikan detik yang dibuang."""
+def silences(wav: str):
+    """[(mulai, selesai)] hening >= 0,25 s pada -35 dB; metode yang sama dengan analisis video referensi."""
     log = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", wav, "-af",
-                          "silencedetect=noise=-40dB:d=0.3", "-f", "null", "-"], capture_output=True, text=True).stderr
+                          "silencedetect=noise=-35dB:d=0.25", "-f", "null", "-"], capture_output=True, text=True).stderr
     starts = [float(x) for x in re.findall(r"silence_start: (-?[\d.]+)", log)]
     ends = [float(x) for x in re.findall(r"silence_end: ([\d.]+)", log)]
-    cuts = [(s + max_pause / 2, e - max_pause / 2) for s, e in zip(starts, ends) if e - s > max_pause]
+    return list(zip(starts, ends))
+
+
+def cap_pauses(wav: str, max_pause: float = MAX_PAUSE) -> float:
+    """Potong bagian tengah setiap hening yang lebih panjang dari max_pause. Kembalikan detik yang dibuang."""
+    cuts = [(s + max_pause / 2, e - max_pause / 2) for s, e in silences(wav) if e - s > max_pause]
     if not cuts:
         return 0.0
     keep, prev = [], 0.0
@@ -402,9 +407,10 @@ def make_narration(job: dict, audio_path: str):
         times, source = [(s, e) for _, s, e in timed], "edge-tts"
     for w, (s, e) in zip(words, times):
         w["start"], w["end"] = s, e
-    speaking = sum(max(0.0, w["end"] - w["start"]) for w in words)
-    print(f"[*] Tempo narasi ({source}): {len(words) / max(speaking, 0.1) * 60:.0f} wpm saat bicara, "
-          f"hening {max(0.0, 1 - speaking / max(duration, 0.1)) * 100:.0f}%, durasi {duration:.1f}s "
+    silent = sum(e - s for s, e in silences(audio_path))
+    speaking = max(duration - silent, 0.1)
+    print(f"[*] Tempo narasi ({source}): {len(words) / speaking * 60:.0f} wpm saat bicara, "
+          f"hening {silent / max(duration, 0.1) * 100:.0f}%, durasi {duration:.1f}s "
           f"(target referensi 158-181 wpm, hening 21-25%)")
     return duration, source
 
@@ -857,7 +863,7 @@ def render_shorts_video(bg_video: str, narration_audio: str, bgm_audio: str, ass
     fade_out = max(total - 2.0, 0.0)
     filter_complex = (f"[0:v]subtitles=filename={ass_subtitles}:fontsdir={FONTS_DIR}[v];"
                       + build_audio_filter(out_label="mix")
-                      + f";[mix]afade=t=in:d=0.3,afade=t=out:st={fade_out:.2f}:d=2[a]")
+                      + f";[mix]loudnorm=I=-15:TP=-1.5:LRA=5,afade=t=in:d=0.3,afade=t=out:st={fade_out:.2f}:d=2[a]")
     cmd = [
         "ffmpeg", "-y", "-v", "error",
         "-i", bg_video,
