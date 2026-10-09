@@ -1,0 +1,83 @@
+name: "Tests"
+
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: pip install requests google-auth google-api-python-client
+      - run: python -m unittest discover -s tests -v
+
+  # Render contoh nyata (Gemini + Pexels) hanya bila pesan commit memuat [render]
+  smoke-render:
+    if: contains(github.event.head_commit.message, '[render]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - style: dark_stoic
+            mood: dark_reflective
+            script: |
+              Get up. [pause] I know it *hurts*. I know you are tired of starting over.
+
+              Nobody saw the nights you almost quit. Nobody clapped for the mornings you showed up anyway.
+
+              But listen to me. This is not where you *break*. This is where you *harden*.
+
+              So rise. [long pause] Not for them. *For you.*
+            visuals: |
+              lion close up face black and white
+              lonely man walking at night city
+              storm waves crashing rocks
+              man standing on mountain peak sunrise
+          - style: soft_healing
+            mood: soft_hopeful
+            script: |
+              Hey. [pause] I know it has been heavy lately.
+
+              No matter how many nights you spent wondering if it gets better, no matter how *small* you feel right now,
+
+              you are still here. [long pause] And that is *enough* for today.
+
+              Keep going.
+            visuals: |
+              ocean waves at sunset
+              woman silhouette looking at sea
+              sunlight through clouds
+              calm beach golden hour
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-montserrat
+      - run: pip install -r requirements.txt
+      - name: Render
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          QUOTE_INPUT: ${{ matrix.script }}
+          VISUALS_INPUT: ${{ matrix.visuals }}
+          STYLE_INPUT: ${{ matrix.style }}
+          MOOD_INPUT: ${{ matrix.mood }}
+        run: python generator.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smoke-${{ matrix.style }}
+          path: output/row-manual/
+          retention-days: 7

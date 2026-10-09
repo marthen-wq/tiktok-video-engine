@@ -1,4 +1,4 @@
-"""Tes offline untuk sequencing multi-klip (hanya butuh ffmpeg + requests).
+"""Tes offline untuk penyusunan footage per adegan (hanya butuh ffmpeg + requests).
 
 Jalankan dari root repo:  python3 -m unittest discover -s tests -v
 """
@@ -25,72 +25,55 @@ def frame_rgb(video, t):
     return tuple(out[:3])
 
 
-class PlanSequenceTest(unittest.TestCase):
-    def test_30s_video_gets_four_clips_and_exact_length(self):
-        n, seg, xf, offsets = generator.plan_sequence(31.5)
-        self.assertEqual(n, 4)
-        self.assertEqual(len(offsets), 3)
-        self.assertAlmostEqual(n * seg - (n - 1) * xf, 31.5, places=6)
+class PlanShotsTest(unittest.TestCase):
+    def test_long_scene_is_split_and_total_survives_crossfade(self):
+        spans = [(0.0, 4.0), (4.0, 17.0), (17.0, 24.0)]
+        shots, xf = generator.plan_shots(spans, 0.6)
+        self.assertEqual([s["scene"] for s in shots], [0, 1, 1, 2])
+        self.assertAlmostEqual(sum(s["len"] for s in shots) - (len(shots) - 1) * xf, 24.0, places=6)
 
-    def test_clip_count_always_within_3_and_4(self):
-        for total in (2, 8, 15, 20, 27, 31.5, 45, 90):
-            n, seg, xf, _ = generator.plan_sequence(total)
-            self.assertIn(n, (3, 4), total)
-            self.assertGreater(seg, 2 * xf, total)
-            self.assertAlmostEqual(n * seg - (n - 1) * xf, total, places=6)
-
-    def test_no_two_consecutive_identical_urls(self):
-        for _ in range(200):
-            urls = generator.pick_clip_urls(4)
-            self.assertEqual(len(urls), 4)
-            for a, b in zip(urls, urls[1:]):
-                self.assertNotEqual(a, b)
+    def test_crossfade_shrinks_for_very_short_shots(self):
+        shots, xf = generator.plan_shots([(0.0, 1.2), (1.2, 8.0)], 0.8)
+        self.assertLessEqual(xf, 1.2 / 3 + 1e-9)
 
 
-class RenderSequenceTest(unittest.TestCase):
-    def test_background_has_distinct_clips_and_right_duration(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            colors = {"red": "red", "green": "lime", "blue": "blue"}
-            urls = []
-            for name, col in colors.items():
-                make_clip(os.path.join(tmp, f"{name}.webm"), col)
-                urls.append(f"https://example.test/{name}.webm")
+class RenderScenesTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+        mock.patch.object(generator, "TEMP_DIR", self.dir).start()
 
-            generator.TEMP_DIR = tmp
-            generator.CINEMATIC_VIDEO_SOURCES = urls
-            # "unduhan" = salin klip lokal ke tujuan
-            generator.download_clip = lambda url, dest: (
-                subprocess.run(["cp", os.path.join(tmp, os.path.basename(url)), dest], check=True) or True)
+    def tearDown(self):
+        mock.patch.stopall()
+        self.tmp.cleanup()
 
-            out = os.path.join(tmp, "bg.mp4")
-            generator.prepare_background_video(30.0, out)
+    def _job(self, visuals):
+        return {"cfg": dict(generator.STYLES["soft_healing"], grade="null"), "visuals": visuals}
 
-            self.assertAlmostEqual(generator.probe_duration(out), 31.5, delta=0.3)
-            # titik tengah tiap segmen (tanpa crossfade) -> warna dominan harus berganti
-            n, seg, xf, _ = generator.plan_sequence(31.5)
-            dominant = []
-            for i in range(n):
-                t = i * (seg - xf) + seg / 2
-                r, g, b = frame_rgb(out, t)
-                dominant.append(max(("r", r), ("g", g), ("b", b), key=lambda x: x[1])[0])
-            print("dominan per segmen:", dominant)
-            self.assertEqual(len(dominant), 4)
-            for a, b in zip(dominant, dominant[1:]):
-                self.assertNotEqual(a, b)
+    def test_each_scene_uses_its_own_footage_and_length_matches(self):
+        clips = {}
+        for name, col in {"red": "red", "blue": "blue"}.items():
+            clips[name] = os.path.join(self.dir, f"{name}.webm")
+            make_clip(clips[name], col)
+        search = lambda q: [{"id": q, "kind": "video", "url": clips[q], "credit": f"{q} (Pexels)"}]
+        mock.patch.object(generator, "search_footage", side_effect=search).start()
+        mock.patch.object(generator, "download_clip",
+                          side_effect=lambda u, d: subprocess.run(["cp", u, d], check=True) or True).start()
+        out = os.path.join(self.dir, "bg.mp4")
+        credits = generator.prepare_scene_video(self._job(["red", "blue"]), [(0.0, 5.0), (5.0, 10.0)], out)
+        self.assertAlmostEqual(generator.probe_duration(out), 10.0, delta=0.2)
+        r, _, b = frame_rgb(out, 2.0)
+        self.assertGreater(r, b)                      # adegan 1: merah
+        r, _, b = frame_rgb(out, 8.0)
+        self.assertGreater(b, r)                      # adegan 2: biru
+        self.assertEqual(credits, ["blue (Pexels)", "red (Pexels)"])
 
-            w_h = subprocess.check_output(
-                ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-                 "stream=width,height", "-of", "csv=p=0", out]).decode().strip()
-            self.assertEqual(w_h, "1080,1920")
-
-    def test_failed_download_uses_fallback_segment_and_keeps_length(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            generator.TEMP_DIR = tmp
-            generator.CINEMATIC_VIDEO_SOURCES = ["https://example.test/a.webm", "https://example.test/b.webm"]
-            generator.download_clip = lambda url, dest: False
-            out = os.path.join(tmp, "bg.mp4")
-            generator.prepare_background_video(20.0, out)
-            self.assertAlmostEqual(generator.probe_duration(out), 21.5, delta=0.3)
+    def test_failed_footage_falls_back_and_keeps_length(self):
+        mock.patch.object(generator, "search_footage", return_value=[]).start()
+        out = os.path.join(self.dir, "bg.mp4")
+        credits = generator.prepare_scene_video(self._job(["nothing"]), [(0.0, 7.5)], out)
+        self.assertAlmostEqual(generator.probe_duration(out), 7.5, delta=0.2)
+        self.assertEqual(credits, [])
 
 
 class ShortSegmentRegressionTest(unittest.TestCase):
@@ -99,13 +82,10 @@ class ShortSegmentRegressionTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = self.tmp.name
-        self.patches = [mock.patch.object(generator, "TEMP_DIR", self.dir)]
-        for p in self.patches:
-            p.start()
+        mock.patch.object(generator, "TEMP_DIR", self.dir).start()
 
     def tearDown(self):
-        for p in self.patches:
-            p.stop()
+        mock.patch.stopall()
         self.tmp.cleanup()
 
     def test_remux_reports_real_duration_of_truncated_download(self):
@@ -128,25 +108,23 @@ class ShortSegmentRegressionTest(unittest.TestCase):
     def test_short_segment_from_random_start_is_redone_from_beginning(self):
         real_encode = generator.encode_segment
 
-        def flaky(clip, start, seg_len, out):  # titik acak menghasilkan segmen 2 s, seperti di runner
-            real_encode(clip, start, 2.0 if start is not None else seg_len, out)
+        def flaky(clip, start, seg_len, out, vf):  # titik acak menghasilkan segmen 2 s, seperti di runner
+            real_encode(clip, start, 2.0 if start is not None else seg_len, out, vf)
 
         out = os.path.join(self.dir, "seg.mp4")
         with mock.patch.object(generator, "encode_segment", side_effect=flaky):
             self.assertTrue(generator.make_segment(self._clip(), 8.5, out))
         self.assertAlmostEqual(generator.probe_duration(out), 8.5, delta=0.15)
 
-    def test_always_short_segments_fall_back_and_background_keeps_length(self):
+    def test_short_clip_is_slowed_down_instead_of_looped_when_close(self):
+        seen = []
         real_encode = generator.encode_segment
-        clip_src = self._clip()
-        with mock.patch.object(generator, "CINEMATIC_VIDEO_SOURCES", ["u/a", "u/b", "u/c"]), \
-             mock.patch.object(generator, "download_clip",
-                               side_effect=lambda u, d: subprocess.run(["cp", clip_src, d], check=True) or True), \
-             mock.patch.object(generator, "encode_segment",
-                               side_effect=lambda c, st, n, o: real_encode(c, st, 2.0, o)):
-            out = os.path.join(self.dir, "bg.mp4")
-            generator.prepare_background_video(30.0, out)
-        self.assertAlmostEqual(generator.probe_duration(out), 31.5, delta=0.3)
+        with mock.patch.object(generator, "encode_segment",
+                               side_effect=lambda c, st, n, o, vf: seen.append(vf) or real_encode(c, st, n, o, vf)):
+            out = os.path.join(self.dir, "slow.mp4")
+            self.assertTrue(generator.make_segment(self._clip(seconds=5), 6.5, out))
+        self.assertIn("setpts=", seen[0])
+        self.assertAlmostEqual(generator.probe_duration(out), 6.5, delta=0.15)
 
     def test_short_crossfade_result_is_extended_to_target(self):
         out = os.path.join(self.dir, "short.mp4")
@@ -160,10 +138,6 @@ class FakeResponse:
     def __init__(self, status, body=b"", headers=None):
         self.status_code, self._body, self.headers = status, body, headers or {}
 
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise generator.requests.HTTPError(f"{self.status_code} Client Error")
-
     def iter_content(self, chunk_size):
         yield self._body
 
@@ -172,7 +146,7 @@ class FakeResponse:
 
 
 class DownloadRetryTest(unittest.TestCase):
-    """Run Actions #3: Wikimedia membalas 429 untuk User-Agent generik."""
+    """Run Actions #3: CDN membalas 429 untuk User-Agent generik."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -192,7 +166,7 @@ class DownloadRetryTest(unittest.TestCase):
         get = mock.patch.object(generator.requests, "get", side_effect=[
             FakeResponse(429, headers={"Retry-After": "5"}), FakeResponse(200, self.body)]).start()
         dest = os.path.join(self.tmp.name, "a.webm")
-        self.assertTrue(generator.download_clip("https://upload.wikimedia.org/x/a.webm", dest))
+        self.assertTrue(generator.download_clip("https://videos.pexels.com/x/a.mp4", dest))
         self.assertEqual(get.call_count, 2)
         self.sleep.assert_called_once_with(5.0)
         ua = get.call_args.kwargs["headers"]["User-Agent"]
@@ -202,7 +176,7 @@ class DownloadRetryTest(unittest.TestCase):
     def test_gives_up_after_attempts_and_does_not_retry_same_url_later(self):
         get = mock.patch.object(generator.requests, "get",
                                 side_effect=lambda *a, **k: FakeResponse(429)).start()
-        url = "https://upload.wikimedia.org/x/b.webm"
+        url = "https://videos.pexels.com/x/b.mp4"
         self.assertFalse(generator.download_clip(url, os.path.join(self.tmp.name, "b.webm")))
         self.assertEqual(get.call_count, generator.DOWNLOAD_ATTEMPTS)
         self.assertFalse(generator.download_clip(url, os.path.join(self.tmp.name, "b2.webm")))
@@ -210,51 +184,26 @@ class DownloadRetryTest(unittest.TestCase):
         self.assertTrue(all(w <= generator.MAX_RETRY_WAIT for (w,), _ in self.sleep.call_args_list))
 
 
-class FootageCandidateTest(unittest.TestCase):
-    """Run Actions #4: file asli 4K hanya memberi 0,9-2,4 s gambar per 15MB."""
-
-    URL = "https://upload.wikimedia.org/wikipedia/commons/4/49/Nature_montage_around_Aberfeldy.webm"
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        clip = os.path.join(self.tmp.name, "real.webm")
-        make_clip(clip, "green", seconds=3)
-        with open(clip, "rb") as fh:
-            self.body = fh.read()
-        generator._failed_urls.clear()
-        mock.patch.object(generator.time, "sleep").start()
-
+class SearchFootageTest(unittest.TestCase):
     def tearDown(self):
         mock.patch.stopall()
-        generator._failed_urls.clear()
-        self.tmp.cleanup()
 
-    def test_transcodes_come_before_original(self):
-        c = generator.footage_candidates(self.URL)
-        self.assertEqual(c[0], "https://upload.wikimedia.org/wikipedia/commons/transcoded/4/49/"
-                               "Nature_montage_around_Aberfeldy.webm/Nature_montage_around_Aberfeldy.webm.1080p.vp9.webm")
-        self.assertEqual(c[-1], self.URL)
-        self.assertEqual(generator.footage_candidates("https://example.com/a.mp4"), ["https://example.com/a.mp4"])
+    def test_portrait_hd_pexels_file_is_picked_and_photos_come_last(self):
+        videos = {"videos": [{"id": 7, "user": {"name": "Ann"}, "video_files": [
+            {"file_type": "video/mp4", "width": 1920, "height": 1080, "link": "land"},
+            {"file_type": "video/mp4", "width": 720, "height": 1280, "link": "p720"},
+            {"file_type": "video/mp4", "width": 1080, "height": 1920, "link": "p1080"}]}]}
+        photos = {"photos": [{"id": 9, "photographer": "Bo", "src": {"large2x": "img"}}]}
 
-    def test_missing_transcodes_fall_through_to_original(self):
         def get(url, **kw):
-            return FakeResponse(200, self.body) if url == self.URL else FakeResponse(404)
-        g = mock.patch.object(generator.requests, "get", side_effect=get).start()
-        self.assertTrue(generator.download_clip(self.URL, os.path.join(self.tmp.name, "o.webm")))
-        self.assertEqual(g.call_count, len(generator.TRANSCODE_KEYS) + 1)
-
-    def test_first_available_transcode_is_used(self):
-        g = mock.patch.object(generator.requests, "get",
-                              side_effect=lambda url, **kw: FakeResponse(200, self.body)).start()
-        self.assertTrue(generator.download_clip(self.URL, os.path.join(self.tmp.name, "t.webm")))
-        self.assertEqual(g.call_count, 1)
-        self.assertIn("/transcoded/", g.call_args.args[0])
-
-    def test_rate_limit_stops_trying_other_candidates(self):
-        g = mock.patch.object(generator.requests, "get",
-                              side_effect=lambda url, **kw: FakeResponse(429)).start()
-        self.assertFalse(generator.download_clip(self.URL, os.path.join(self.tmp.name, "r.webm")))
-        self.assertEqual(g.call_count, generator.DOWNLOAD_ATTEMPTS)  # hanya kandidat pertama
+            body = videos if "videos" in url else photos
+            return mock.Mock(json=lambda: body)
+        mock.patch.object(generator, "PEXELS_API_KEY", "k").start()
+        mock.patch.object(generator, "PIXABAY_API_KEY", "").start()
+        mock.patch.object(generator.requests, "get", side_effect=get).start()
+        c = generator.search_footage("lion on rock")
+        self.assertEqual([x["url"] for x in c], ["p1080", "img"])
+        self.assertEqual(c[0]["credit"], "Ann (Pexels)")
 
 
 if __name__ == "__main__":

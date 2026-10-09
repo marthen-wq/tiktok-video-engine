@@ -1,4 +1,4 @@
-"""Tes offline untuk sinkronisasi subtitle dan ducking audio (butuh ffmpeg).
+"""Tes offline untuk waktu kata edge-tts dan ducking audio (butuh ffmpeg).
 
 Jalankan dari root repo:  python3 -m unittest discover -s tests -v
 """
@@ -20,19 +20,6 @@ TEXT = "Kamu tidak sedang tertinggal, kamu hanya sedang ditempa. Teruslah melang
 def word_events(words, step=0.5, start=0.4):
     return [{"kind": "WordBoundary", "text": w.strip(",."), "start": start + i * step,
              "end": start + i * step + step * 0.8} for i, w in enumerate(words)]
-
-
-def parse_dialogues(path):
-    out = []
-    with open(path, encoding="utf-8") as fh:
-        lines = fh.readlines()
-    for line in lines:
-        m = re.match(r"Dialogue: 0,(\d+):(\d+):(\d+)\.(\d+),(\d+):(\d+):(\d+)\.(\d+),Default,,0,0,0,,(.*)", line)
-        if m:
-            g = m.groups()
-            t = lambda h, mi, s, cs: int(h) * 3600 + int(mi) * 60 + int(s) + int(cs) / 100
-            out.append((t(*g[0:4]), t(*g[4:8]), g[8].strip()))
-    return out
 
 
 class WordTimingTest(unittest.TestCase):
@@ -70,41 +57,6 @@ class WordTimingTest(unittest.TestCase):
         # kata panjang mendapat waktu lebih lama dari kata pendek
         dur = {w: e - s for w, s, e in t}
         self.assertGreater(dur["tertinggal,"], dur["kamu"])
-
-
-class AssSubtitleTest(unittest.TestCase):
-    def test_chunks_start_when_first_word_is_spoken(self):
-        words = TEXT.split()
-        ev = word_events(words)
-        with tempfile.TemporaryDirectory() as tmp:
-            ass = os.path.join(tmp, "s.ass")
-            generator.create_ass_subtitles(TEXT, 12.0, ass, ev)
-            d = parse_dialogues(ass)
-        self.assertEqual(len(d), -(-len(words) // 3))
-        for i, (start, end, text) in enumerate(d):
-            self.assertAlmostEqual(start, ev[i * 3]["start"], delta=0.011)
-            self.assertLess(start, end)
-            self.assertEqual(text, " ".join(words[i * 3:i * 3 + 3]).upper())
-        for (_, e1, _), (s2, _, _) in zip(d, d[1:]):
-            self.assertLessEqual(e1, s2 + 0.011)  # tidak ada tumpang-tindih
-
-    def test_long_pause_blanks_screen_but_short_pause_does_not(self):
-        ev = [{"kind": "WordBoundary", "text": w, "start": s, "end": s + 0.3}
-              for w, s in [("a", 0.0), ("b", 0.4), ("c", 0.8), ("d", 5.0), ("e", 5.4), ("f", 5.8)]]
-        with tempfile.TemporaryDirectory() as tmp:
-            ass = os.path.join(tmp, "s.ass")
-            generator.create_ass_subtitles("a b c d e f", 7.0, ass, ev)
-            d = parse_dialogues(ass)
-        (s1, e1, _), (s2, _, _) = d[0], d[1]
-        self.assertLess(e1, s2 - 1.0)  # jeda ~3,9 detik: layar kosong, subtitle tidak menggantung
-
-    def test_braces_in_quote_cannot_inject_ass_tags(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            ass = os.path.join(tmp, "s.ass")
-            generator.create_ass_subtitles("halo {\\an7} dunia", 3.0, ass, None)
-            with open(ass, encoding="utf-8") as fh:
-                body = fh.read().split("[Events]")[1]
-        self.assertNotIn("{", body)
 
 
 class NarrationEventsTest(unittest.TestCase):

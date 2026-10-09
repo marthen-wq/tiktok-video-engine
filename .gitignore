@@ -1,6 +1,8 @@
 output/
 temp/
-assets/
+assets/*
+!assets/fonts/
+.DS_Store
 __pycache__/
 *.pyc
 *.json.key
