@@ -2,6 +2,9 @@ name: "Spike S1 - TTS comparison"
 
 on:
   workflow_dispatch:
+  push:
+    branches: [feat/v3]
+    paths: ['spikes/**', '.github/workflows/spike-tts.yml']
 
 jobs:
   tts:
