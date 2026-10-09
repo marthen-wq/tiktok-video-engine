@@ -348,35 +348,49 @@ def probe_duration(path: str) -> float:
         return 0.0
 
 
-MAX_PAUSE = 1.2  # detik; Gemini memberi jeda 2-4 s untuk tag jeda (hening 42% di smoke run, referensi 21-25%)
+MAX_PAUSE = 1.0  # detik; Gemini memberi jeda 2-4 s untuk tag jeda (hening 42% di smoke run, referensi 21-25%)
+EDGE_KEEP = 0.05  # hening yang disisakan di awal/akhir audio TTS
 
 
 def silences(wav: str):
-    """[(mulai, selesai)] hening >= 0,25 s pada -35 dB; metode yang sama dengan analisis video referensi."""
+    """([(mulai, selesai)], durasi) hening >= 0,25 s pada -35 dB; metode yang sama dengan analisis video referensi."""
     log = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", wav, "-af",
                           "silencedetect=noise=-35dB:d=0.25", "-f", "null", "-"], capture_output=True, text=True).stderr
     starts = [float(x) for x in re.findall(r"silence_start: (-?[\d.]+)", log)]
     ends = [float(x) for x in re.findall(r"silence_end: ([\d.]+)", log)]
-    return list(zip(starts, ends))
+    h, m, sec = re.search(r"Duration: (\d+):(\d+):([\d.]+)", log).groups()
+    return list(zip(starts, ends)), int(h) * 3600 + int(m) * 60 + float(sec)
 
 
 def cap_pauses(wav: str, max_pause: float = MAX_PAUSE) -> float:
     """Potong bagian tengah setiap hening yang lebih panjang dari max_pause. Kembalikan detik yang dibuang."""
-    cuts = [(s + max_pause / 2, e - max_pause / 2) for s, e in silences(wav) if e - s > max_pause]
+    spans, total = silences(wav)
+    cuts = []
+    for s, e in spans:
+        if s <= 0.05:                       # hening di awal: buang (lead-in ditambahkan sendiri)
+            cuts.append((0.0, e - EDGE_KEEP))
+        elif e >= total - 0.05:             # hening di akhir: buang (tail ditambahkan sendiri)
+            cuts.append((s + EDGE_KEEP, None))
+        elif e - s > max_pause:
+            cuts.append((s + max_pause / 2, e - max_pause / 2))
+    cuts = [(a, b) for a, b in cuts if b is None or b > a]
     if not cuts:
         return 0.0
     keep, prev = [], 0.0
     for a, b in cuts:
-        keep.append((prev, a))
+        if a > prev:
+            keep.append((prev, a))
         prev = b
+    if prev is not None:
+        keep.append((prev, None))
     graph = "".join(f"[0:a]atrim=start={a:.3f}" + (f":end={b:.3f}" if b is not None else "")
-                    + f",asetpts=PTS-STARTPTS[k{i}];" for i, (a, b) in enumerate(keep + [(prev, None)]))
-    graph += "".join(f"[k{i}]" for i in range(len(keep) + 1)) + f"concat=n={len(keep) + 1}:v=0:a=1[out]"
+                    + f",asetpts=PTS-STARTPTS[k{i}];" for i, (a, b) in enumerate(keep))
+    graph += "".join(f"[k{i}]" for i in range(len(keep))) + f"concat=n={len(keep)}:v=0:a=1[out]"
     tmp = wav + ".cap.wav"
     subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", wav, "-filter_complex", graph, "-map", "[out]", tmp],
                    check=True)
     os.replace(tmp, wav)
-    return sum(b - a for a, b in cuts)
+    return sum((b if b is not None else total) - a for a, b in cuts)
 
 
 def make_narration(job: dict, audio_path: str):
@@ -407,7 +421,7 @@ def make_narration(job: dict, audio_path: str):
         times, source = [(s, e) for _, s, e in timed], "edge-tts"
     for w, (s, e) in zip(words, times):
         w["start"], w["end"] = s, e
-    silent = sum(e - s for s, e in silences(audio_path))
+    silent = sum(e - s for s, e in silences(audio_path)[0])
     speaking = max(duration - silent, 0.1)
     print(f"[*] Tempo narasi ({source}): {len(words) / speaking * 60:.0f} wpm saat bicara, "
           f"hening {silent / max(duration, 0.1) * 100:.0f}%, durasi {duration:.1f}s "
