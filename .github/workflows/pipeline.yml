@@ -1,0 +1,92 @@
+name: "Shorts pipeline"
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      row:
+        description: 'Paksa render baris ini (kosongkan untuk jalan normal)'
+        required: false
+        default: ''
+
+concurrency:
+  group: shorts-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+  GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+  TIKTOK_CLIENT_KEY: ${{ secrets.TIKTOK_CLIENT_KEY }}
+  TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+  TIKTOK_REFRESH_TOKEN: ${{ secrets.TIKTOK_REFRESH_TOKEN }}
+  YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+  YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+  YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+  # Pengaturan tanpa rahasia: Settings -> Secrets and variables -> Actions -> Variables
+  APPROVAL_MODE: ${{ vars.APPROVAL_MODE }}
+  TIKTOK_MODE: ${{ vars.TIKTOK_MODE }}
+  POST_SLOTS: ${{ vars.POST_SLOTS }}
+  AUDIENCE_TZ: ${{ vars.AUDIENCE_TZ }}
+  GITHUB_TOKEN: ${{ github.token }}
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install light dependencies
+        run: pip install requests google-auth google-api-python-client
+
+      - name: Tick (Telegram, jadwal, posting, cari READY)
+        id: tick
+        env:
+          FORCE_ROW: ${{ github.event.inputs.row }}
+        run: python scheduler.py tick
+
+      - name: Install render dependencies
+        if: steps.tick.outputs.render_row != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-montserrat
+          pip install -r requirements.txt
+
+      - name: Render
+        if: steps.tick.outputs.render_row != ''
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+        run: python scheduler.py render ${{ steps.tick.outputs.render_row }}
+
+      - name: Upload video
+        if: steps.tick.outputs.render_row != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-row-${{ steps.tick.outputs.render_row }}
+          path: output/video-row-${{ steps.tick.outputs.render_row }}/
+          retention-days: 7
+
+      # Repo publik: GitHub mematikan cron setelah 60 hari tanpa commit. Satu commit kosong per bulan mencegahnya.
+      - name: Keepalive
+        if: github.event_name == 'schedule'
+        run: |
+          if [ "$(date -u +%d%H)" = "0100" ] && [ "$(date -u +%M)" -lt 15 ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -m "keepalive: jaga cron tetap aktif"
+            git push
+          fi

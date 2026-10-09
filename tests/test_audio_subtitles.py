@@ -116,6 +116,20 @@ def mean_db(path, start, length, filters):
     return float(re.search(r"mean_volume: (-?[\d.]+) dB", r.stderr).group(1))
 
 
+class PauseCapTest(unittest.TestCase):
+    def test_long_silence_is_capped_and_short_silence_kept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = os.path.join(tmp, "n.wav")
+            subprocess.run(["ffmpeg", "-y", "-v", "error",
+                            "-f", "lavfi", "-i", "sine=f=300:d=1", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono:d=3",
+                            "-f", "lavfi", "-i", "sine=f=300:d=1", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono:d=0.6",
+                            "-f", "lavfi", "-i", "sine=f=300:d=1",
+                            "-filter_complex", "[0][1][2][3][4]concat=n=5:v=0:a=1,aresample=24000", wav], check=True)
+            removed = generator.cap_pauses(wav, 1.2)
+            self.assertAlmostEqual(removed, 1.8, delta=0.1)
+            self.assertAlmostEqual(generator.probe_duration(wav), 4.8, delta=0.1)
+
+
 class DuckingTest(unittest.TestCase):
     def test_music_drops_while_narrator_speaks_and_narration_stays_full(self):
         low = "lowpass=f=300,lowpass=f=300,lowpass=f=300"    # sisakan musik 110 Hz

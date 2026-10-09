@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TikTok login</title>
+<style>
+  :root { --bg: #fafaf9; --fg: #1c1917; --muted: #57534e; --link: #9a3412; --card: #f5f5f4; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0c0a09; --fg: #f5f5f4; --muted: #a8a29e; --link: #fdba74; --card: #1c1917; } }
+  body { background: var(--bg); color: var(--fg); font: 17px/1.6 system-ui, sans-serif; margin: 0; padding: 48px 16px; }
+  main { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 28px; margin: 0 0 8px; } h2 { font-size: 19px; margin-top: 28px; }
+  p, li { color: var(--muted); } a { color: var(--link); }
+  code { background: var(--card); padding: 12px; display: block; word-break: break-all; border-radius: 8px; font-size: 15px; }
+  button { margin-top: 12px; padding: 10px 16px; font: inherit; border-radius: 8px; border: 1px solid var(--muted); background: var(--card); color: var(--fg); cursor: pointer; }
+</style>
+</head>
+<body>
+<main>
+  <h1>TikTok login</h1>
+  <p id="msg">Copy this code and paste it into the terminal where <em>auth_setup.py</em> is waiting.</p>
+  <code id="code">(no code in the URL)</code>
+  <button id="copy" type="button">Copy code</button>
+<script>
+  const q = new URLSearchParams(location.search);
+  const code = q.get("code"), err = q.get("error_description") || q.get("error");
+  const el = document.getElementById("code");
+  if (code) el.textContent = code;
+  else if (err) { el.textContent = err; document.getElementById("msg").textContent = "TikTok returned an error:"; }
+  document.getElementById("copy").onclick = () => navigator.clipboard.writeText(el.textContent);
+</script>
+</main>
+</body>
+</html>

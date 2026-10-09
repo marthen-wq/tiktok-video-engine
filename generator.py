@@ -348,6 +348,32 @@ def probe_duration(path: str) -> float:
         return 0.0
 
 
+MAX_PAUSE = 1.2  # detik; Gemini memberi jeda 2-4 s untuk tag jeda (hening 42% di smoke run, referensi 21-25%)
+
+
+def cap_pauses(wav: str, max_pause: float = MAX_PAUSE) -> float:
+    """Potong bagian tengah setiap hening yang lebih panjang dari max_pause. Kembalikan detik yang dibuang."""
+    log = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", wav, "-af",
+                          "silencedetect=noise=-40dB:d=0.3", "-f", "null", "-"], capture_output=True, text=True).stderr
+    starts = [float(x) for x in re.findall(r"silence_start: (-?[\d.]+)", log)]
+    ends = [float(x) for x in re.findall(r"silence_end: ([\d.]+)", log)]
+    cuts = [(s + max_pause / 2, e - max_pause / 2) for s, e in zip(starts, ends) if e - s > max_pause]
+    if not cuts:
+        return 0.0
+    keep, prev = [], 0.0
+    for a, b in cuts:
+        keep.append((prev, a))
+        prev = b
+    graph = "".join(f"[0:a]atrim=start={a:.3f}" + (f":end={b:.3f}" if b is not None else "")
+                    + f",asetpts=PTS-STARTPTS[k{i}];" for i, (a, b) in enumerate(keep + [(prev, None)]))
+    graph += "".join(f"[k{i}]" for i in range(len(keep) + 1)) + f"concat=n={len(keep) + 1}:v=0:a=1[out]"
+    tmp = wav + ".cap.wav"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", wav, "-filter_complex", graph, "-map", "[out]", tmp],
+                   check=True)
+    os.replace(tmp, wav)
+    return sum(b - a for a, b in cuts)
+
+
 def make_narration(job: dict, audio_path: str):
     """Rekam narasi lalu isi start/end di setiap kata. Kembalikan (durasi, sumber)."""
     words = [w for scene in job["scenes"] for w in scene]
@@ -355,6 +381,9 @@ def make_narration(job: dict, audio_path: str):
     cfg = job["cfg"]
     style_note = cfg["tts_style"] + (f". {job['direction']}" if job["direction"] else "")
     if gemini_tts(tts_text(job["scenes"], "gemini"), cfg["voice"], style_note, audio_path):
+        removed = cap_pauses(audio_path)
+        if removed:
+            print(f"[*] Jeda panjang dipangkas ke maks {MAX_PAUSE}s ({removed:.1f}s hening dibuang)")
         duration = probe_duration(audio_path)
         try:
             asr = transcribe_words(audio_path)
@@ -681,13 +710,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 CAPTION_STYLES = {
     # kapital tebal kecil di tengah; kata abu-abu menyala putih tepat saat diucapkan (referensi "Get up")
     "dark_stoic": {
-        "style": "Style: Default,Montserrat ExtraBold,52,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,"
+        "style": "Style: Default,Montserrat ExtraBold,60,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,"
                  "0,0,0,0,100,100,1,0,1,0,2,5,150,150,0,1",
         "max_words": 6, "hold": 0.5, "fade": (120, 150), "upper": True,
     },
     # serif tipis, frasa utuh muncul dan hilang lembut (referensi "Keep going")
     "soft_healing": {
-        "style": "Style: Default,Lora,50,&H00FFFFFF,&H000000FF,&H00000000,&H50000000,"
+        "style": "Style: Default,Lora,56,&H00FFFFFF,&H000000FF,&H00000000,&H50000000,"
                  "0,0,0,0,100,100,0,0,1,0,1.5,5,140,140,0,1",
         "max_words": 8, "hold": 0.8, "fade": (350, 400), "upper": False,
     },
